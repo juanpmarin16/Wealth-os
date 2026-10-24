@@ -35,6 +35,10 @@ type Transaction = {
   realizedGain: number;
 };
 
+type StoredTransaction = Omit<Transaction, 'realizedGain'> & {
+  realizedGain?: number;
+};
+
 type LedgerResult = {
   assets: Asset[];
   openingCash: number;
@@ -116,6 +120,28 @@ function validNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStoredTransaction(value: unknown): value is StoredTransaction {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.date === 'string' &&
+    typeof value.type === 'string' &&
+    TRANSACTION_TYPES.includes(value.type as TransactionType) &&
+    typeof value.ticker === 'string' &&
+    validNumber(value.amount) &&
+    validNumber(value.quantity) &&
+    validNumber(value.price) &&
+    validNumber(value.fee) &&
+    typeof value.notes === 'string' &&
+    (value.realizedGain === undefined || validNumber(value.realizedGain))
+  );
+}
+
 function readStoredAssets(): unknown[] | null {
   try {
     const raw = localStorage.getItem(ASSETS_KEY);
@@ -140,15 +166,13 @@ function readOpeningCash(): number {
     const oldAssets = readStoredAssets();
     const oldCash = oldAssets?.find(
       (item) =>
-        item &&
-        typeof item === 'object' &&
+        isRecord(item) &&
         'ticker' in item &&
         String(item.ticker).toUpperCase() === 'EUR'
     );
 
     if (
-      oldCash &&
-      typeof oldCash === 'object' &&
+      isRecord(oldCash) &&
       'value' in oldCash &&
       validNumber(oldCash.value) &&
       oldCash.value >= 0
@@ -171,19 +195,7 @@ function readTransactions(): Transaction[] {
     if (!Array.isArray(parsed)) return [];
 
     return parsed
-      .filter(
-        (item) =>
-          item &&
-          typeof item.id === 'string' &&
-          typeof item.date === 'string' &&
-          TRANSACTION_TYPES.includes(item.type) &&
-          typeof item.ticker === 'string' &&
-          validNumber(item.amount) &&
-          validNumber(item.quantity) &&
-          validNumber(item.price) &&
-          validNumber(item.fee) &&
-          typeof item.notes === 'string'
-      )
+      .filter(isStoredTransaction)
       .map((item) => ({
         id: item.id,
         date: item.date,
@@ -236,9 +248,8 @@ function readAssets(): Asset[] {
 
   return stored
     .filter(
-      (item) =>
-        item &&
-        typeof item === 'object' &&
+      (item): item is Record<string, unknown> =>
+        isRecord(item) &&
         typeof item.id === 'string' &&
         typeof item.name === 'string' &&
         typeof item.ticker === 'string' &&
@@ -246,7 +257,7 @@ function readAssets(): Asset[] {
     )
     .filter((item) => String(item.ticker).toUpperCase() !== 'EUR')
     .map((item) => {
-      const old = item as Record<string, unknown>;
+      const old = item;
 
       const openingValue = validNumber(old.openingValue)
         ? old.openingValue
@@ -627,7 +638,7 @@ function App() {
 
   function openAddTransaction() {
     setEditingTransactionId(null);
-  
+
     setTxForm({
       date: today(),
       type: 'Buy',
@@ -638,7 +649,7 @@ function App() {
       fee: '0',
       notes: '',
     });
-  
+
     setShowTransactionForm(true);
   }
 
@@ -756,7 +767,7 @@ function App() {
     }
 
     const tx: Transaction = {
-      id: id(),
+      id: editingTransactionId || id(),
       date: txForm.date,
       type,
       ticker: ticker || 'EUR',
@@ -769,15 +780,14 @@ function App() {
     };
 
     setTransactions((current) =>
-  editingTransactionId
-    ? current.map((item) =>
-        item.id === editingTransactionId ? tx : item
-      )
-    : [...current, tx]
-);
+      editingTransactionId
+        ? current.map((item) =>
+            item.id === editingTransactionId ? tx : item
+          )
+        : [...current, tx]
+    );
 
-setEditingTransactionId(null);
-
+    setEditingTransactionId(null);
     setShowTransactionForm(false);
     setNotice(
       `${type} transaction saved. Cash and holdings have been recalculated.`
@@ -786,7 +796,7 @@ setEditingTransactionId(null);
 
   function openEditTransaction(tx: Transaction) {
     setEditingTransactionId(tx.id);
-  
+
     setTxForm({
       date: tx.date,
       type: tx.type,
@@ -797,7 +807,7 @@ setEditingTransactionId(null);
       fee: String(tx.fee),
       notes: tx.notes,
     });
-  
+
     setShowTransactionForm(true);
   }
 
@@ -1038,7 +1048,7 @@ setEditingTransactionId(null);
                             allocation
                           )
                             .filter(([, value]) => value > 0)
-                            .map(([category, value], index, entries) => {
+                            .map((_, index, entries) => {
                               const start =
                                 (entries
                                   .slice(0, index)
@@ -1548,21 +1558,21 @@ setEditingTransactionId(null);
                           {tx.notes || '—'}
                         </td>
                         <td>
-                        <div className="table-actions">
-  <button
-    className="small-button"
-    onClick={() => openEditTransaction(tx)}
-  >
-    Edit
-  </button>
+                          <div className="table-actions">
+                            <button
+                              className="small-button"
+                              onClick={() => openEditTransaction(tx)}
+                            >
+                              Edit
+                            </button>
 
-  <button
-    className="small-button delete-button"
-    onClick={() => deleteTransaction(tx)}
-  >
-    Delete
-  </button>
-</div>
+                            <button
+                              className="small-button delete-button"
+                              onClick={() => deleteTransaction(tx)}
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1791,9 +1801,9 @@ setEditingTransactionId(null);
             >
               <div className="modal-heading">
                 <div>
-                <h2 id="transaction-form-title">
-  {editingTransactionId ? 'Edit Transaction' : 'Add Transaction'}
-</h2>
+                  <h2 id="transaction-form-title">
+                    {editingTransactionId ? 'Edit Transaction' : 'Add Transaction'}
+                  </h2>
                   <p>
                     Saved operations recalculate cash and tracked holdings.
                   </p>
@@ -1991,8 +2001,8 @@ setEditingTransactionId(null);
                   </button>
 
                   <button type="submit" className="primary-button">
-  {editingTransactionId ? 'Save Changes' : 'Save Transaction'}
-</button>
+                    {editingTransactionId ? 'Save Changes' : 'Save Transaction'}
+                  </button>
                 </div>
               </form>
             </section>
