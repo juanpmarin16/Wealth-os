@@ -1,0 +1,42 @@
+
+name: Wealth OS - Build Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: TypeScript and Production Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check application TypeScript
+        run: npx tsc -p tsconfig.app.json --noEmit
+
+      - name: Check Vite configuration TypeScript
+        run: npx tsc -p tsconfig.node.json --noEmit
+
+      - name: Build production application
+        run: npm run build
