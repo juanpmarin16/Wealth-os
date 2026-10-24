@@ -1,6 +1,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import Analytics from './Analytics';
+import MarketDataImport from './MarketDataImport';
 import './App.css';
 
 type Asset = {
@@ -870,6 +871,7 @@ function App() {
     { label: 'Transactions', icon: '⇄' },
     { label: 'Analytics', icon: '▥' },
     { label: 'Simulator', icon: '⌁' },
+    { label: 'Market Data', icon: '↧' },
   ];
 
   const colors = [
@@ -1610,6 +1612,8 @@ function App() {
             transactions={transactions}
           />
         )}
+
+        {page === 'Market Data' && <MarketDataImport />}
 
         {page === 'Simulator' && (
           <section className="panel placeholder-panel">
