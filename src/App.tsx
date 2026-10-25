@@ -325,6 +325,7 @@ function calculateLedger(
             : 0;
 
         asset.quantity = newQuantity;
+        asset.currentPrice = tx.price;
         break;
       }
 
@@ -333,6 +334,7 @@ function calculateLedger(
 
         const quantitySold = Math.min(tx.quantity, asset.quantity);
         asset.quantity = Math.max(0, asset.quantity - quantitySold);
+        asset.currentPrice = tx.price;
 
         if (asset.quantity < 1e-8) {
           asset.quantity = 0;
@@ -375,9 +377,150 @@ function App() {
   const [transactionTypeFilter, setTransactionTypeFilter] = useState('All');
   const [notice, setNotice] = useState('');
 
+  const [assetForm, setAssetForm] = useState({
+    name: '',
+    ticker: '',
+    category: 'Equities',
+    openingValue: '0',
+    quantity: '0',
+    currentPrice: '0',
+  });
+
+  const [txForm, setTxForm] = useState({
+    date: today(),
+    type: 'Buy' as TransactionType,
+    ticker: '',
+    amount: '',
+    quantity: '',
+    price: '',
+    fee: '0',
+    notes: '',
+  });
+
+  const [accessToken, setAccessToken] = useState<string>(() => {
+    try { return sessionStorage.getItem('wealth-os-session-token') ?? ''; } catch { return ''; }
+  });
+  const [accessPassword, setAccessPassword] = useState('');
+  const [accessStatus, setAccessStatus] = useState<'signedOut' | 'checking' | 'signedIn'>(
+    () => {
+      try { return sessionStorage.getItem('wealth-os-session-token') ? 'checking' : 'signedOut'; }
+      catch { return 'signedOut'; }
+    },
+  );
+  const [accessError, setAccessError] = useState('');
+  const [cloudLoaded, setCloudLoaded] = useState(false);
+  const skipFirstCloudSave = useRef(true);
+
+  async function hydrateCloudPortfolio(token: string) {
+    setAccessError('');
+    try {
+      const response = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+      const result: unknown = await response.json().catch(() => null);
+      if (response.status === 401) throw new Error('Your session expired. Please sign in again.');
+      if (!response.ok) {
+        const detail = typeof result === 'object' && result !== null && 'detail' in result
+          ? String(result.detail) : `Portfolio API returned HTTP ${response.status}.`;
+        throw new Error(detail);
+      }
+      if (!isRecord(result)) throw new Error('The portfolio API returned an invalid response.');
+      if (result.exists === true && isRecord(result.portfolio)) {
+        const portfolio = result.portfolio;
+        if (Array.isArray(portfolio.assets)) {
+          setInitialAssets(portfolio.assets.filter((item): item is Asset =>
+            isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string' &&
+            typeof item.ticker === 'string' && typeof item.category === 'string' &&
+            validNumber(item.openingValue) && validNumber(item.quantity) &&
+            validNumber(item.currentPrice) && validNumber(item.averageCost),
+          ));
+        }
+        if (Array.isArray(portfolio.transactions)) {
+          setTransactions(portfolio.transactions.filter(isStoredTransaction).map((item) => ({
+            id: item.id, date: item.date, type: item.type, ticker: item.ticker.toUpperCase(),
+            amount: item.amount, quantity: item.quantity, price: item.price, fee: item.fee,
+            notes: item.notes, realizedGain: validNumber(item.realizedGain) ? item.realizedGain : 0,
+          })));
+        }
+        if (validNumber(portfolio.openingCash) && portfolio.openingCash >= 0) setOpeningCash(portfolio.openingCash);
+        if (typeof portfolio.openingDate === 'string') setOpeningDate(portfolio.openingDate);
+      } else {
+        // First sign-in: migrate this browser's existing portfolio to the shared cloud account.
+        const localPortfolio = {
+          assets: initialAssets,
+          transactions,
+          openingCash,
+          openingDate,
+        };
+        const saveResponse = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(localPortfolio),
+        });
+        if (!saveResponse.ok) {
+          const payload: unknown = await saveResponse.json().catch(() => null);
+          const detail = isRecord(payload) && 'detail' in payload ? String(payload.detail) : 'Could not migrate this browser portfolio.';
+          throw new Error(detail);
+        }
+      }
+      setAccessToken(token);
+      setAccessStatus('signedIn');
+      setCloudLoaded(true);
+    } catch (cause) {
+      setAccessStatus('signedOut');
+      setCloudLoaded(false);
+      try { sessionStorage.removeItem('wealth-os-session-token'); } catch { /* Ignore unavailable storage. */ }
+      setAccessToken('');
+      setAccessError(cause instanceof Error ? cause.message : 'Could not connect to cloud portfolio storage.');
+    }
+  }
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAccessError('');
+    setAccessStatus('checking');
+    try {
+      const response = await fetch(`${PORTFOLIO_API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ password: accessPassword }),
+      });
+      const result: unknown = await response.json().catch(() => null);
+      if (!response.ok || !isRecord(result) || typeof result.token !== 'string') {
+        const detail = isRecord(result) && 'detail' in result ? String(result.detail) : 'Sign-in failed.';
+        throw new Error(detail);
+      }
+      try { sessionStorage.setItem('wealth-os-session-token', result.token); } catch { /* Session can remain in memory. */ }
+      setAccessPassword('');
+      await hydrateCloudPortfolio(result.token);
+    } catch (cause) {
+      setAccessStatus('signedOut');
+      setAccessError(cause instanceof Error ? cause.message : 'Sign-in failed.');
+    }
+  }
+
+  function signOut() {
+    try { sessionStorage.removeItem('wealth-os-session-token'); } catch { /* Ignore unavailable storage. */ }
+    setAccessToken('');
+    setAccessStatus('signedOut');
+    setCloudLoaded(false);
+    setAccessError('');
+  }
+
+  useEffect(() => {
+    if (accessToken && accessStatus === 'checking') void hydrateCloudPortfolio(accessToken);
+    // Validate a session token once on page load; sign-in calls hydration directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [marketPriceStatus, setMarketPriceStatus] = useState('Loading saved market prices…');
 
   useEffect(() => {
+    if (!cloudLoaded || accessStatus !== 'signedIn') return;
     let cancelled = false;
     const symbols: Record<string, string> = {
       VGWL: 'VGWL.DE',
@@ -421,12 +564,12 @@ function App() {
           const latest = valid[valid.length - 1];
           if (!latest || !validNumber(latest.close)) return null;
 
-          const currencyValue = typeof payload.currency === 'string'
+          const rawCurrency = typeof payload.currency === 'string'
             ? payload.currency
             : typeof latest.currency === 'string' ? latest.currency : 'USD';
-          const currency = currencyValue.toUpperCase();
+          const currency = rawCurrency.toUpperCase();
           let eurPrice = latest.close;
-          if (currency === 'GBX' || currency === 'GBp'.toUpperCase() || currency === 'GBXP') {
+          if (currency === 'GBX' || currency === 'GBPENCE' || currency === 'GBXP') {
             eurPrice /= 100;
             const eurGbp = await latestFxRate('EURGBP=X');
             if (!eurGbp || eurGbp <= 0) return { ticker: asset.ticker, error: 'missing EUR/GBP FX rate' } as const;
@@ -436,21 +579,20 @@ function App() {
             if (!eurCurrency || eurCurrency <= 0) return { ticker: asset.ticker, error: 'missing EUR/' + currency + ' FX rate' } as const;
             eurPrice /= eurCurrency;
           }
-
-          return { ticker: asset.ticker.toUpperCase(), price: eurPrice, date: String(latest.date), symbol, currency };
+          return { ticker: asset.ticker.toUpperCase(), price: eurPrice, date: String(latest.date) };
         } catch {
           return null;
         }
       }));
 
       if (cancelled) return;
-      const quotes = results.filter((item): item is { ticker: string; price: number; date: string; symbol: string; currency: string } =>
+      const quotes = results.filter((item): item is { ticker: string; price: number; date: string } =>
         item !== null && 'price' in item
       );
       const errors = results.filter((item): item is { ticker: string; error: string } =>
         item !== null && 'error' in item
       );
-      if (quotes.length > 0) {
+      if (quotes.length) {
         setInitialAssets((current) => current.map((asset) => {
           const quote = quotes.find((item) => item.ticker === asset.ticker.toUpperCase());
           return quote ? { ...asset, currentPrice: quote.price } : asset;
@@ -465,7 +607,7 @@ function App() {
 
     void hydrateLatestPrices();
     return () => { cancelled = true; };
-  }, [cloudLoaded]);
+  }, [cloudLoaded, accessStatus]);
 
   const ledger = useMemo(
     () => calculateLedger(initialAssets, transactions, openingCash),
@@ -477,7 +619,7 @@ function App() {
       ledger.assets.map((asset) => ({
         ...asset,
         // Market value is strictly units held multiplied by the latest market price.
-        // Opening value is historical accounting data, never an extra current asset value.
+        // Historical opening value is not an additional current asset balance.
         value: Math.max(0, asset.quantity) * Math.max(0, asset.currentPrice),
       })),
     [ledger.assets]
@@ -994,15 +1136,12 @@ function App() {
     ];
 
     setInitialAssets((current) => current.map((asset) => ({
-      ...asset,
-      openingValue: 0,
-      quantity: 0,
-      openingPrice: undefined,
-      averageCost: 0,
+      ...asset, openingValue: 0, quantity: 0, openingPrice: undefined, averageCost: 0,
     })));
     setTransactions(demo);
     setOpeningCash(28000);
-    setNotice('Synthetic demo transactions loaded. Every generated transaction is labelled DEMO TEST DATA; execution prices are illustrative, not historical market quotes.');
+    setOpeningDate('2024-01-05');
+    setNotice('Synthetic demo transactions loaded. All generated transactions are labelled DEMO TEST DATA; execution prices are illustrative, not historical market quotes.');
   }
 
   function resetDemo() {
@@ -1167,11 +1306,7 @@ function App() {
               >
                 + Add transaction
               </button>
-              <button
-                className="text-button"
-                onClick={generateDemoTransactions}
-                title="Replace transaction history with labelled synthetic transactions"
-              >
+              <button className="text-button" onClick={generateDemoTransactions}>
                 Generate demo transactions
               </button>
             </section>
