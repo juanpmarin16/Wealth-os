@@ -605,7 +605,6 @@ export default function Analytics({
     openingValue,
     currentValue,
     externalFlows,
-    portfolioValuations,
   ]);
 
   const twr = useMemo(() => {
@@ -634,6 +633,7 @@ export default function Analytics({
     openingValue,
     currentValue,
     externalFlows,
+    portfolioValuations,
   ]);
 
 
