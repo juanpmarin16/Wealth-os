@@ -405,7 +405,9 @@ function App() {
     () =>
       ledger.assets.map((asset) => ({
         ...asset,
-        value: (asset.openingValue > 0 && asset.currentPrice > 0 && asset.openingPrice && asset.openingPrice > 0\n          ? asset.openingValue * (asset.currentPrice / asset.openingPrice)\n          : asset.openingValue) + asset.quantity * asset.currentPrice,
+        value: (asset.openingValue > 0 && asset.currentPrice > 0 && asset.openingPrice && asset.openingPrice > 0
+          ? asset.openingValue * (asset.currentPrice / asset.openingPrice)
+          : asset.openingValue) + asset.quantity * asset.currentPrice,
       })),
     [ledger.assets]
   );
