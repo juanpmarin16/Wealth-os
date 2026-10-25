@@ -151,10 +151,8 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         if (!cancelled) {
           setHistory(rows);
           setAssets(previous => previous.map((asset, index) => {
-            const returns = series[index].slice(1).map((point, j) => {
-              const before = series[index][j].value;
-              return before > 0 && point.value > 0 ? point.value / before - 1 : NaN;
-            }).filter(Number.isFinite);
+            const monthlyPrices = Array.from(new Map(series[index].map(point => [point.date, point.value])).entries()).sort((a, b) => a[0].localeCompare(b[0])).map(entry => entry[1]);
+            const returns = monthlyPrices.slice(1).map((value, j) => monthlyPrices[j] > 0 && value > 0 ? value / monthlyPrices[j] - 1 : NaN).filter(Number.isFinite);
             if (returns.length < 12) return asset;
             const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
             const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, returns.length - 1);
