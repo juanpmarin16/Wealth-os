@@ -386,6 +386,23 @@ function App() {
       LDGL: 'LDGL.L',
     };
 
+    async function latestFxRate(symbol: string): Promise<number | null> {
+      try {
+        const response = await fetch(
+          new URL('/api/history?symbol=' + encodeURIComponent(symbol) + '&period=5d', PORTFOLIO_API_URL).toString(),
+          { headers: { Accept: 'application/json' } },
+        );
+        const payload: unknown = await response.json();
+        if (!response.ok || !isRecord(payload) || !Array.isArray(payload.prices)) return null;
+        const rates = payload.prices.filter((row): row is Record<string, unknown> =>
+          isRecord(row) && validNumber(row.close) && row.close > 0
+        ).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+        return rates.length ? rates[0].close as number : null;
+      } catch {
+        return null;
+      }
+    }
+
     async function hydrateLatestPrices() {
       const results = await Promise.all(initialAssets.map(async (asset) => {
         const symbol = symbols[asset.ticker.toUpperCase()];
@@ -399,173 +416,56 @@ function App() {
           const payload: unknown = await response.json();
           if (!isRecord(payload) || !Array.isArray(payload.prices)) return null;
           const valid = payload.prices.filter((row): row is Record<string, unknown> =>
-            isRecord(row) && typeof row.date === 'string' &&
-            validNumber(row.close) && row.close > 0
+            isRecord(row) && typeof row.date === 'string' && validNumber(row.close) && row.close > 0
           ).sort((a, b) => String(a.date).localeCompare(String(b.date)));
           const latest = valid[valid.length - 1];
           if (!latest || !validNumber(latest.close)) return null;
-          return { ticker: asset.ticker.toUpperCase(), price: latest.close, date: String(latest.date), symbol };
+
+          const currencyValue = typeof payload.currency === 'string'
+            ? payload.currency
+            : typeof latest.currency === 'string' ? latest.currency : 'USD';
+          const currency = currencyValue.toUpperCase();
+          let eurPrice = latest.close;
+          if (currency === 'GBX' || currency === 'GBp'.toUpperCase() || currency === 'GBXP') {
+            eurPrice /= 100;
+            const eurGbp = await latestFxRate('EURGBP=X');
+            if (!eurGbp || eurGbp <= 0) return { ticker: asset.ticker, error: 'missing EUR/GBP FX rate' } as const;
+            eurPrice /= eurGbp;
+          } else if (currency !== 'EUR') {
+            const eurCurrency = await latestFxRate('EUR' + currency + '=X');
+            if (!eurCurrency || eurCurrency <= 0) return { ticker: asset.ticker, error: 'missing EUR/' + currency + ' FX rate' } as const;
+            eurPrice /= eurCurrency;
+          }
+
+          return { ticker: asset.ticker.toUpperCase(), price: eurPrice, date: String(latest.date), symbol, currency };
         } catch {
           return null;
         }
       }));
 
       if (cancelled) return;
-      const quotes = results.filter((item): item is { ticker: string; price: number; date: string; symbol: string } => item !== null);
+      const quotes = results.filter((item): item is { ticker: string; price: number; date: string; symbol: string; currency: string } =>
+        item !== null && 'price' in item
+      );
+      const errors = results.filter((item): item is { ticker: string; error: string } =>
+        item !== null && 'error' in item
+      );
       if (quotes.length > 0) {
         setInitialAssets((current) => current.map((asset) => {
           const quote = quotes.find((item) => item.ticker === asset.ticker.toUpperCase());
           return quote ? { ...asset, currentPrice: quote.price } : asset;
         }));
-        setMarketPriceStatus('Latest saved prices loaded: ' + quotes.map((quote) => quote.ticker + ' (' + quote.date + ')').join(', '));
+        setMarketPriceStatus('Latest saved prices converted to EUR: ' + quotes.map((quote) => quote.ticker + ' (' + quote.date + ')').join(', ') +
+          (errors.length ? '. Not updated: ' + errors.map((item) => item.ticker + ' — ' + item.error).join(', ') : ''));
       } else {
-        setMarketPriceStatus('No saved EUR-quoted market prices found for the current holdings. Import the corresponding symbols in Market Data.');
+        setMarketPriceStatus('No usable saved prices found for current holdings. Import the corresponding symbols in Market Data.' +
+          (errors.length ? ' FX issue: ' + errors.map((item) => item.ticker + ' — ' + item.error).join(', ') : ''));
       }
     }
 
     void hydrateLatestPrices();
     return () => { cancelled = true; };
   }, [cloudLoaded]);
-
-  const [assetForm, setAssetForm] = useState({
-    name: '',
-    ticker: '',
-    category: 'Equities',
-    openingValue: '0',
-    quantity: '0',
-    currentPrice: '0',
-  });
-
-  const [txForm, setTxForm] = useState({
-    date: today(),
-    type: 'Buy' as TransactionType,
-    ticker: '',
-    amount: '',
-    quantity: '',
-    price: '',
-    fee: '0',
-    notes: '',
-  });
-
-  const [accessToken, setAccessToken] = useState<string>(() => {
-    try { return sessionStorage.getItem('wealth-os-session-token') ?? ''; } catch { return ''; }
-  });
-  const [accessPassword, setAccessPassword] = useState('');
-  const [accessStatus, setAccessStatus] = useState<'signedOut' | 'checking' | 'signedIn'>(
-    () => {
-      try { return sessionStorage.getItem('wealth-os-session-token') ? 'checking' : 'signedOut'; }
-      catch { return 'signedOut'; }
-    },
-  );
-  const [accessError, setAccessError] = useState('');
-  const [cloudLoaded, setCloudLoaded] = useState(false);
-  const skipFirstCloudSave = useRef(true);
-
-  async function hydrateCloudPortfolio(token: string) {
-    setAccessError('');
-    try {
-      const response = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      });
-      const result: unknown = await response.json().catch(() => null);
-      if (response.status === 401) throw new Error('Your session expired. Please sign in again.');
-      if (!response.ok) {
-        const detail = typeof result === 'object' && result !== null && 'detail' in result
-          ? String(result.detail) : `Portfolio API returned HTTP ${response.status}.`;
-        throw new Error(detail);
-      }
-      if (!isRecord(result)) throw new Error('The portfolio API returned an invalid response.');
-      if (result.exists === true && isRecord(result.portfolio)) {
-        const portfolio = result.portfolio;
-        if (Array.isArray(portfolio.assets)) {
-          setInitialAssets(portfolio.assets.filter((item): item is Asset =>
-            isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string' &&
-            typeof item.ticker === 'string' && typeof item.category === 'string' &&
-            validNumber(item.openingValue) && validNumber(item.quantity) &&
-            validNumber(item.currentPrice) && validNumber(item.averageCost),
-          ));
-        }
-        if (Array.isArray(portfolio.transactions)) {
-          setTransactions(portfolio.transactions.filter(isStoredTransaction).map((item) => ({
-            id: item.id, date: item.date, type: item.type, ticker: item.ticker.toUpperCase(),
-            amount: item.amount, quantity: item.quantity, price: item.price, fee: item.fee,
-            notes: item.notes, realizedGain: validNumber(item.realizedGain) ? item.realizedGain : 0,
-          })));
-        }
-        if (validNumber(portfolio.openingCash) && portfolio.openingCash >= 0) setOpeningCash(portfolio.openingCash);
-        if (typeof portfolio.openingDate === 'string') setOpeningDate(portfolio.openingDate);
-      } else {
-        // First sign-in: migrate this browser's existing portfolio to the shared cloud account.
-        const localPortfolio = {
-          assets: initialAssets,
-          transactions,
-          openingCash,
-          openingDate,
-        };
-        const saveResponse = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify(localPortfolio),
-        });
-        if (!saveResponse.ok) {
-          const payload: unknown = await saveResponse.json().catch(() => null);
-          const detail = isRecord(payload) && 'detail' in payload ? String(payload.detail) : 'Could not migrate this browser portfolio.';
-          throw new Error(detail);
-        }
-      }
-      setAccessToken(token);
-      setAccessStatus('signedIn');
-      setCloudLoaded(true);
-    } catch (cause) {
-      setAccessStatus('signedOut');
-      setCloudLoaded(false);
-      try { sessionStorage.removeItem('wealth-os-session-token'); } catch { /* Ignore unavailable storage. */ }
-      setAccessToken('');
-      setAccessError(cause instanceof Error ? cause.message : 'Could not connect to cloud portfolio storage.');
-    }
-  }
-
-  async function signIn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setAccessError('');
-    setAccessStatus('checking');
-    try {
-      const response = await fetch(`${PORTFOLIO_API_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ password: accessPassword }),
-      });
-      const result: unknown = await response.json().catch(() => null);
-      if (!response.ok || !isRecord(result) || typeof result.token !== 'string') {
-        const detail = isRecord(result) && 'detail' in result ? String(result.detail) : 'Sign-in failed.';
-        throw new Error(detail);
-      }
-      try { sessionStorage.setItem('wealth-os-session-token', result.token); } catch { /* Session can remain in memory. */ }
-      setAccessPassword('');
-      await hydrateCloudPortfolio(result.token);
-    } catch (cause) {
-      setAccessStatus('signedOut');
-      setAccessError(cause instanceof Error ? cause.message : 'Sign-in failed.');
-    }
-  }
-
-  function signOut() {
-    try { sessionStorage.removeItem('wealth-os-session-token'); } catch { /* Ignore unavailable storage. */ }
-    setAccessToken('');
-    setAccessStatus('signedOut');
-    setCloudLoaded(false);
-    setAccessError('');
-  }
-
-  useEffect(() => {
-    if (accessToken && accessStatus === 'checking') void hydrateCloudPortfolio(accessToken);
-    // Validate a session token once on page load; sign-in calls hydration directly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const ledger = useMemo(
     () => calculateLedger(initialAssets, transactions, openingCash),
