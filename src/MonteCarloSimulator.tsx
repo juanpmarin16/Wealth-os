@@ -23,6 +23,15 @@ function quantile(values: number[], p: number) {
   const lo = Math.floor(index);
   return sorted[lo] + (sorted[Math.min(lo + 1, sorted.length - 1)] - sorted[lo]) * (index - lo);
 }
+function cholesky(matrix: number[][]) {
+  const n = matrix.length, L = Array.from({ length: n }, () => Array(n).fill(0));
+  for (let i = 0; i < n; i++) for (let j = 0; j <= i; j++) {
+    let sum = matrix[i][j];
+    for (let k = 0; k < j; k++) sum -= L[i][k] * L[j][k];
+    L[i][j] = i === j ? Math.sqrt(Math.max(sum, 1e-8)) : sum / (L[j][j] || 1);
+  }
+  return L;
+}
 function studentRandom(df: number) {
   let chi = 0;
   for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
@@ -32,7 +41,7 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
   const steps = years * 12;
   const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
   const historicalRows = history.length ? history : [];
-  const L = corr.length === assets.length ? corr.map((row, i) => row.map((_, j) => { let sum = row[j]; for (let k = 0; k < Math.min(i, j); k++) sum -= row[k] * row[k]; return i === j ? Math.sqrt(Math.max(sum, 1e-8)) : row[j]; })) : assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0));
+  const L = cholesky(corr.length === assets.length ? corr : assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0)));
   const monthlyAssetReturns: number[][] = [];
   for (let month = 0; month < steps; month++) {
     if (model === 'historical' && historicalRows.length) {
@@ -149,7 +158,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const medianPath = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.5));
     const p10Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.1));
     const p90Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.9));
-    return { nominal, real, drawdowns, annualized, totalContributions, totalWithdrawals, medianPath, p10Path, p90Path, survival: results.filter(r => r.survived && r.ending > 0).length / results.length, lossProbability: results.filter(r => r.ending < currentValue).length / results.length, yearlyRows: Array.from({ length: yearsCount + 1 }, (_, y) => [String(y), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(r => r.yearly[y] ?? 0), p)))]) };
+    return { nominal, real, drawdowns, medianPath, p10Path, p90Path, survival: results.filter(r => r.survived && r.ending > 0).length / results.length, lossProbability: results.filter(r => r.ending < currentValue).length / results.length, yearlyRows: Array.from({ length: yearsCount + 1 }, (_, y) => [String(y), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(r => r.yearly[y] ?? 0), p)))]) };
   }, [results, initialAmount, years, currentValue]);
 
   const updateAsset = (index: number, field: 'name' | 'weight' | 'mean' | 'vol', value: string) => {
