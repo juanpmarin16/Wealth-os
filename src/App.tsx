@@ -425,7 +425,7 @@ function App() {
 
     void hydrateLatestPrices();
     return () => { cancelled = true; };
-  }, []);
+  }, [cloudLoaded]);
 
   const [assetForm, setAssetForm] = useState({
     name: '',
