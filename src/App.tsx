@@ -616,12 +616,21 @@ function App() {
 
   const valuedAssets = useMemo(
     () =>
-      ledger.assets.map((asset) => ({
-        ...asset,
-        // Market value is strictly units held multiplied by the latest market price.
-        // Historical opening value is not an additional current asset balance.
-        value: Math.max(0, asset.quantity) * Math.max(0, asset.currentPrice),
-      })),
+      ledger.assets.map((asset) => {
+        const currentPrice = Math.max(0, asset.currentPrice);
+        const openingPrice = asset.openingPrice && asset.openingPrice > 0
+          ? asset.openingPrice
+          : currentPrice;
+        // Opening positions are distinct from units added through the transaction ledger.
+        // Revalue the opening position from its saved price anchor, then add tracked units.
+        const openingPositionValue = Math.max(0, asset.openingValue) *
+          (openingPrice > 0 ? currentPrice / openingPrice : 1);
+        const transactionPositionValue = Math.max(0, asset.quantity) * currentPrice;
+        return {
+          ...asset,
+          value: openingPositionValue + transactionPositionValue,
+        };
+      }),
     [ledger.assets]
   );
 
@@ -1931,6 +1940,7 @@ function App() {
                 0
               ) + openingCash
             }
+            openingCash={openingCash}
             openingDate={openingDate}
             transactions={transactions}
           />
