@@ -37,7 +37,7 @@ function studentRandom(df: number) {
   for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
   return randomNormal() / Math.sqrt(Math.max(chi / df, 1e-9)) * Math.sqrt((df - 2) / df);
 }
-function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage', withdrawalPct: number, sequenceStress: number): PathSummary {
+function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage', withdrawalPct: number, sequenceStress: number, blockYears: number): PathSummary {
   const steps = years * 12;
   const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
   const historicalRows = history.length ? history : [];
@@ -113,6 +113,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [distribution, setDistribution] = useState<Distribution>('student');
   const [df, setDf] = useState('5');
   const [sequenceStress, setSequenceStress] = useState('0');
+  const [blockYears, setBlockYears] = useState('1');
   const [withdrawalPct, setWithdrawalPct] = useState('4');
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [historyStatus, setHistoryStatus] = useState('Loading saved market history…');
@@ -172,7 +173,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
       const sj = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[1] - mj) ** 2, 0));
       return si > 0 && sj > 0 ? clamp(cov / (si * sj), -.95, .95) : 0;
     }));
-    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0)));
+    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0, Number(blockYears) || 1)));
   };
 
   const stats = useMemo(() => {
@@ -234,6 +235,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Cashflow type<select value={flowType} onChange={e => setFlowType(e.target.value as 'contribution' | 'withdrawal' | 'percentage')}><option value="contribution">Contributions</option><option value="withdrawal">Withdrawals</option><option value="percentage">Fixed percentage withdrawals</option></select></label>
           <label>Simulation paths<input type="number" min="100" max="20000" step="100" value={runs} onChange={e => setRuns(e.target.value)} /></label>
           <label>Expected inflation (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
+          {model === 'historical' && <label>Bootstrap block length (years)<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="1">1 year (single-year bootstrap)</option><option value="2">2 years</option><option value="3">3 years</option><option value="5">5 years</option></select></label>}
           <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns</option><option value="parameterized">Parameterized returns</option></select></label>
           {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as Distribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
           {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" value={df} onChange={e => setDf(e.target.value)} /></label>}
