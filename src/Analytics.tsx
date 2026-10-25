@@ -22,6 +22,7 @@ type AnalyticsAsset = {
   id: string;
   name: string;
   ticker: string;
+  category: string;
   quantity: number;
   currentPrice: number;
   openingValue: number;
