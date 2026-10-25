@@ -382,8 +382,8 @@ function App() {
     const symbols: Record<string, string> = {
       VGWL: 'VGWL.DE',
       EQQQ: 'EQQQ.DE',
-      BTC: 'BTC-EUR',
-      LDGL: 'LDGL.DE',
+      BTC: 'BTC-USD',
+      LDGL: 'LDGL.L',
     };
 
     async function hydrateLatestPrices() {
@@ -1215,6 +1215,10 @@ function App() {
             </div>
           </div>
         )}
+
+        <p role="status" style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>
+          Market pricing: {marketPriceStatus}
+        </p>
 
         {page === 'Dashboard' && (
           <>
