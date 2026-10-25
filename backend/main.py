@@ -75,6 +75,7 @@ def health() -> dict[str, str]:
 def history(
     symbol: str = Query(..., min_length=1, max_length=32),
     period: str = Query("max"),
+    start: date | None = Query(None),
 ) -> dict[str, Any]:
     normalized_symbol = symbol.strip().upper()
     normalized_period = period.strip().lower()
@@ -86,6 +87,8 @@ def history(
             status_code=400,
             detail=f"Unsupported period. Choose one of: {', '.join(sorted(PERIODS))}.",
         )
+    if start is not None and start > date.today():
+        raise HTTPException(status_code=400, detail="Start date cannot be in the future.")
 
     ticker = yf.Ticker(normalized_symbol)
     frame: pd.DataFrame | None = None
@@ -94,32 +97,40 @@ def history(
     # Try the per-ticker history endpoint first. Some yfinance/Yahoo responses
     # fail here intermittently, so fall back to the download endpoint.
     try:
-        frame = ticker.history(
-            period=PERIOD_TO_START[normalized_period],
-            interval="1d",
-            auto_adjust=False,
-            actions=False,
-            repair=True,
-            raise_errors=True,
-            timeout=25,
-        )
+        history_args: dict[str, Any] = {
+            "interval": "1d",
+            "auto_adjust": False,
+            "actions": False,
+            "repair": True,
+            "raise_errors": True,
+            "timeout": 25,
+        }
+        if start is not None:
+            history_args["start"] = start.isoformat()
+        else:
+            history_args["period"] = PERIOD_TO_START[normalized_period]
+        frame = ticker.history(**history_args)
     except Exception as exc:
         provider_errors.append(f"Ticker.history: {type(exc).__name__}: {exc}")
         logger.warning("yfinance history failed for %s: %s", normalized_symbol, exc)
 
     if frame is None or frame.empty:
         try:
-            frame = yf.download(
-                tickers=normalized_symbol,
-                period=PERIOD_TO_START[normalized_period],
-                interval="1d",
-                auto_adjust=False,
-                actions=False,
-                progress=False,
-                threads=False,
-                timeout=25,
-                multi_level_index=False,
-            )
+            download_args: dict[str, Any] = {
+                "tickers": normalized_symbol,
+                "interval": "1d",
+                "auto_adjust": False,
+                "actions": False,
+                "progress": False,
+                "threads": False,
+                "timeout": 25,
+                "multi_level_index": False,
+            }
+            if start is not None:
+                download_args["start"] = start.isoformat()
+            else:
+                download_args["period"] = PERIOD_TO_START[normalized_period]
+            frame = yf.download(**download_args)
         except Exception as exc:
             provider_errors.append(f"yf.download: {type(exc).__name__}: {exc}")
             logger.warning("yfinance download failed for %s: %s", normalized_symbol, exc)
