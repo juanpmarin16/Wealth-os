@@ -1075,6 +1075,29 @@ function App() {
     );
   }
 
+  function generateDemoTransactions() {
+    if (transactions.length > 0 && !window.confirm('Replace the current transaction history with clearly labelled synthetic test transactions?')) return;
+
+    const demo: Transaction[] = [
+      { id: 'demo-2024-01-deposit', date: '2024-01-05', type: 'Deposit', ticker: 'EUR', amount: 12000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — initial contribution', realizedGain: 0 },
+      { id: 'demo-2024-01-vgwl', date: '2024-01-08', type: 'Buy', ticker: 'VGWL', amount: 8000, quantity: 80, price: 100, fee: 2, notes: 'DEMO TEST DATA — VGWL purchase', realizedGain: 0 },
+      { id: 'demo-2024-02-eqqq', date: '2024-02-12', type: 'Buy', ticker: 'EQQQ', amount: 5000, quantity: 25, price: 200, fee: 2, notes: 'DEMO TEST DATA — EQQQ purchase', realizedGain: 0 },
+      { id: 'demo-2024-03-btc', date: '2024-03-18', type: 'Buy', ticker: 'BTC', amount: 4000, quantity: 0.08, price: 50000, fee: 1, notes: 'DEMO TEST DATA — Bitcoin purchase; synthetic execution price', realizedGain: 0 },
+      { id: 'demo-2024-04-deposit', date: '2024-04-02', type: 'Deposit', ticker: 'EUR', amount: 8000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — additional contribution', realizedGain: 0 },
+      { id: 'demo-2024-04-ldgl', date: '2024-04-08', type: 'Buy', ticker: 'LDGL', amount: 3000, quantity: 150, price: 20, fee: 1, notes: 'DEMO TEST DATA — LDGL purchase', realizedGain: 0 },
+      { id: 'demo-2024-06-dividend', date: '2024-06-28', type: 'Dividend', ticker: 'VGWL', amount: 95, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — dividend received', realizedGain: 0 },
+      { id: 'demo-2024-08-sell', date: '2024-08-15', type: 'Sell', ticker: 'EQQQ', amount: 1200, quantity: 5, price: 240, fee: 2, notes: 'DEMO TEST DATA — partial EQQQ sale', realizedGain: 198 },
+      { id: 'demo-2025-01-deposit', date: '2025-01-10', type: 'Deposit', ticker: 'EUR', amount: 5000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — annual contribution', realizedGain: 0 },
+      { id: 'demo-2025-02-vgwl', date: '2025-02-14', type: 'Buy', ticker: 'VGWL', amount: 2500, quantity: 20, price: 125, fee: 1, notes: 'DEMO TEST DATA — additional VGWL purchase', realizedGain: 0 },
+      { id: 'demo-2025-06-dividend', date: '2025-06-30', type: 'Dividend', ticker: 'LDGL', amount: 62, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — dividend received', realizedGain: 0 },
+      { id: 'demo-2025-09-withdrawal', date: '2025-09-12', type: 'Withdrawal', ticker: 'EUR', amount: 1000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — partial withdrawal', realizedGain: 0 },
+    ];
+
+    setTransactions(demo);
+    setOpeningCash(28000);
+    setNotice('Synthetic demo transactions loaded. Every generated transaction is labelled DEMO TEST DATA; execution prices are illustrative, not historical market quotes.');
+  }
+
   function resetDemo() {
     if (
       !window.confirm(
@@ -1236,6 +1259,13 @@ function App() {
                 onClick={openAddTransaction}
               >
                 + Add transaction
+              </button>
+              <button
+                className="text-button"
+                onClick={generateDemoTransactions}
+                title="Replace transaction history with labelled synthetic transactions"
+              >
+                Generate demo transactions
               </button>
             </section>
 
