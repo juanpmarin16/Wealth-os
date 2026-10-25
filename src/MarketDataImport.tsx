@@ -218,6 +218,7 @@ export default function MarketDataImport({
     let updated = 0;
     let totalPrices = 0;
     const failures: string[] = [];
+    const durabilityWarnings: string[] = [];
     const skipped: string[] = [];
     const fullHistoryListings = new Set(readFullHistoryListings());
 
@@ -244,6 +245,22 @@ export default function MarketDataImport({
             fullHistoryAlreadyImported ? lastStoredDate : undefined,
           );
           const count = await saveHistory(asset, symbol, data);
+          try {
+            const durableResponse = await fetch(new URL("/api/saved-prices", MARKET_DATA_API_URL).toString(), {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ symbol, currency: data.currency || "USD", prices: data.prices }),
+            });
+            if (!durableResponse.ok) {
+              const durablePayload: unknown = await durableResponse.json().catch(() => null);
+              const detail = typeof durablePayload === "object" && durablePayload !== null && "detail" in durablePayload
+                ? String(durablePayload.detail)
+                : `HTTP ${durableResponse.status}`;
+              durabilityWarnings.push(`${asset.ticker}: ${detail}`);
+            }
+          } catch (cause) {
+            durabilityWarnings.push(`${asset.ticker}: ${cause instanceof Error ? cause.message : "persistent storage unavailable"}`);
+          }
           if (!fullHistoryAlreadyImported) {
             fullHistoryListings.add(listingId);
             try {
@@ -304,7 +321,7 @@ export default function MarketDataImport({
       <section className="panel" style={{ padding: 22 }}>
         <h2 style={{ marginTop: 0 }}>Market Data</h2>
         <p style={{ color: "var(--muted)", lineHeight: 1.7 }}>
-          Pull daily market data for your portfolio. Each asset is first backfilled with all history available from Yahoo Finance, including any existing partial history; later pulls fetch only data from the latest saved date, refreshing overlapping records. Prices are saved locally in this browser, and existing records are preserved if a download fails.
+          Pull daily market data for your portfolio. Each asset is first backfilled with all history available from Yahoo Finance, including any existing partial history; later pulls fetch only data from the latest saved date, refreshing overlapping records. Prices are saved in this browser and also uploaded to the durable market-data database when DATABASE_URL is configured on the API. Local records are preserved if a download fails.
         </p>
 
         <button
