@@ -91,10 +91,12 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [runs, setRuns] = useState('5000');
   const [inflationAdjusted, setInflationAdjusted] = useState(true);
   const [inflation, setInflation] = useState('2.5');
-  const [assets, setAssets] = useState([
-    { name: 'Global Equities', weight: 60, mean: 7, vol: 16 },
-    { name: 'Bonds', weight: 40, mean: 3.5, vol: 7 },
-  ]);
+  const [assets, setAssets] = useState<Array<{ name: string; ticker: string; weight: number; mean: number; vol: number }>>(() => {
+    const total = portfolioAssets.reduce((sum, asset) => sum + Math.max(0, asset.value), 0);
+    return portfolioAssets.length
+      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: 7, vol: 15 }))
+      : [{ name: 'Global Equities', ticker: 'Equity', weight: 60, mean: 7, vol: 16 }, { name: 'Bonds', ticker: 'Bond', weight: 40, mean: 3.5, vol: 7 }];
+  });
   const [results, setResults] = useState<PathSummary[] | null>(null);
   const [model, setModel] = useState<Model>('historical');
   const [distribution, setDistribution] = useState<Distribution>('student');
