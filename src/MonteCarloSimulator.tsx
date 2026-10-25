@@ -28,10 +28,11 @@ function studentRandom(df: number) {
   for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
   return randomNormal() / Math.sqrt(Math.max(chi / df, 1e-9)) * Math.sqrt((df - 2) / df);
 }
-function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], withdrawals: boolean, model: Model, distribution: Distribution, df: number, history: HistoryRow[], flowType: 'contribution' | 'withdrawal' | 'percentage', withdrawalPct: number, sequenceStress: number): PathSummary {
+function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage', withdrawalPct: number, sequenceStress: number): PathSummary {
   const steps = years * 12;
   const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
   const historicalRows = history.length ? history : [];
+  const L = corr.length === assets.length ? corr.map((row, i) => row.map((_, j) => { let sum = row[j]; for (let k = 0; k < Math.min(i, j); k++) sum -= row[k] * row[k]; return i === j ? Math.sqrt(Math.max(sum, 1e-8)) : row[j]; })) : assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0));
   const monthlyAssetReturns: number[][] = [];
   for (let month = 0; month < steps; month++) {
     if (model === 'historical' && historicalRows.length) {
@@ -39,7 +40,8 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
       monthlyAssetReturns.push(assets.map((a, i) => Number.isFinite(row.returns[i]) ? row.returns[i] : Math.max(-.95, (Math.pow(1 + a.mean / 100, 1 / 12) - 1) + a.vol / 100 / Math.sqrt(12) * randomNormal())));
     } else {
       const z = assets.map(() => distribution === 'student' ? studentRandom(df) : randomNormal());
-      monthlyAssetReturns.push(assets.map((a, i) => Math.max(-.95, Math.pow(1 + a.mean / 100, 1 / 12) - 1 + a.vol / 100 / Math.sqrt(12) * z[i])));
+      const correlated = z.map((_, i) => L[i].slice(0, i + 1).reduce((sum, value, j) => sum + value * z[j], 0));
+      monthlyAssetReturns.push(assets.map((a, i) => Math.max(-.95, Math.pow(1 + a.mean / 100, 1 / 12) - 1 + a.vol / 100 / Math.sqrt(12) * correlated[i])));
     }
   }
   if (sequenceStress > 0) {
@@ -50,12 +52,10 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
     order.forEach((source, target) => { for (let m = 0; m < 12; m++) monthlyAssetReturns[target * 12 + m] = original[source * 12 + m]; });
   }
   let balance = start, peak = Math.max(start, 1), maxDrawdown = 0, cumulativeInflation = 1, survived = true, totalContributions = 0, totalWithdrawals = 0;
-  const yearly: number[] = [start], annualReturns: number[] = [];
-  let yearStart = start;
+  const yearly: number[] = [start];
   const cashflowEvery = 12 / frequency;
   for (let month = 0; month < steps; month++) {
     cumulativeInflation *= Math.max(.5, 1 + (inflation / 100) / 12 + (inflation / 100) * .35 / Math.sqrt(12) * randomNormal());
-    const old = balance;
     const r = monthlyAssetReturns[month].reduce((v, ret, i) => v + weights[i] * ret, 0);
     balance = Math.max(0, balance * (1 + r));
     if ((month + 1) % cashflowEvery === 0) {
@@ -67,16 +67,16 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
     }
     peak = Math.max(peak, balance);
     maxDrawdown = Math.max(maxDrawdown, peak > 0 ? (peak - balance) / peak : 0);
-    if ((month + 1) % 12 === 0) { yearly.push(balance); annualReturns.push(yearStart > 0 ? balance / yearStart - 1 : -1); yearStart = balance; }
+    if ((month + 1) % 12 === 0) yearly.push(balance);
   }
-  return { ending: balance, realEnding: balance / Math.max(cumulativeInflation, .01), survived, maxDrawdown, yearly, annualReturns, totalContributions, totalWithdrawals };
+  return { ending: balance, realEnding: balance / Math.max(cumulativeInflation, .01), survived, maxDrawdown, yearly, annualReturns: [], totalContributions, totalWithdrawals };
 }
 
 export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAssets }: Props) {
   const suggestedStart = Math.max(0, Math.round(initialPortfolioValue || 0));
   const [initialAmount, setInitialAmount] = useState(String(suggestedStart));
   const [cashflow, setCashflow] = useState('12000');
-  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal'>('contribution');
+  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage'>('contribution');
   const [frequency, setFrequency] = useState('12');
   const [years, setYears] = useState('30');
   const [runs, setRuns] = useState('5000');
@@ -137,7 +137,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const duration = clamp(Math.round(Number(years)), 1, 60);
     const flowFrequency = Number(frequency);
     const amount = Number(cashflow);
-    if (model === 'historical' && history.length < 12) { setResults(null); return; }\n    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, flowType === 'withdrawal', model, distribution, clamp(Number(df) || 5, 3, 30), history, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0)));
+    if (model === 'historical' && history.length < 12) { setResults(null); return; }\n    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0)));
   };
 
   const stats = useMemo(() => {
@@ -145,9 +145,6 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const nominal = results.map(r => r.ending);
     const real = results.map(r => r.realEnding);
     const drawdowns = results.map(r => r.maxDrawdown);
-    const annualized = results.map(r => Number(initialAmount) > 0 && r.ending > 0 ? Math.pow(r.ending / Number(initialAmount), 1 / Math.max(1, Number(years))) - 1 : -1);
-    const totalContributions = results.map(r => r.totalContributions);
-    const totalWithdrawals = results.map(r => r.totalWithdrawals);
     const yearsCount = Math.max(...results.map(r => r.yearly.length)) - 1;
     const medianPath = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.5));
     const p10Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.1));
@@ -187,14 +184,14 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Horizon (years)<input type="number" min="1" max="60" value={years} onChange={e => setYears(e.target.value)} /></label>
           <label>{flowType === 'contribution' ? 'Periodic contribution' : 'Periodic withdrawal'}<input type="number" min="0" step="100" value={cashflow} onChange={e => setCashflow(e.target.value)} /></label>
           <label>Cashflow frequency<select value={frequency} onChange={e => setFrequency(e.target.value)}><option value="1">Annually</option><option value="2">Semi-annually</option><option value="4">Quarterly</option><option value="12">Monthly</option></select></label>
-          <label>Cashflow type<select value={flowType} onChange={e => setFlowType(e.target.value as 'contribution' | 'withdrawal')}><option value="contribution">Contributions</option><option value="withdrawal">Withdrawals</option></select></label>
+          <label>Cashflow type<select value={flowType} onChange={e => setFlowType(e.target.value as 'contribution' | 'withdrawal')}><option value="contribution">Contributions</option><option value="withdrawal">Withdrawals</option><option value="percentage">Fixed percentage withdrawals</option></select></label>
           <label>Simulation paths<input type="number" min="100" max="20000" step="100" value={runs} onChange={e => setRuns(e.target.value)} /></label>
           <label>Expected inflation (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
           <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns</option><option value="parameterized">Parameterized returns</option></select></label>
           {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as Distribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
           {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" value={df} onChange={e => setDf(e.target.value)} /></label>}
           <label>Worst return years first<select value={sequenceStress} onChange={e => setSequenceStress(e.target.value)}><option value="0">Off</option>{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1} year(s)</option>)}</select></label>
-          {flowType === 'withdrawal' && <label>Annual withdrawal % (percentage model)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>\n          }
+          {flowType === 'percentage' && <label>Annual withdrawal (%)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>}
           <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust cashflows</span></label>
         </div>
         <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically in the simulation.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
