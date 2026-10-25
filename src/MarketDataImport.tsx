@@ -232,7 +232,42 @@ export default function MarketDataImport({
 
         try {
           const listingId = "listing_yahoo_" + safeId(symbol);
-          const existingPrices = await getMarketPrices(listingId);
+          let existingPrices = await getMarketPrices(listingId);
+
+          // Rehydrate an empty browser cache from the durable PostgreSQL archive.
+          if (existingPrices.length === 0) {
+            try {
+              const savedResponse = await fetch(
+                new URL(`/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, MARKET_DATA_API_URL).toString(),
+                { headers: { Accept: "application/json" } },
+              );
+              const savedPayload: unknown = await savedResponse.json().catch(() => null);
+              if (savedResponse.ok && typeof savedPayload === "object" && savedPayload !== null &&
+                  "prices" in savedPayload && Array.isArray(savedPayload.prices) && savedPayload.prices.length > 0) {
+                const saved = savedPayload as {
+                  prices: Array<PriceRecord & { currency?: string }>;
+                  count?: number;
+                };
+                const currency = saved.prices.find((price) => price.currency)?.currency || "USD";
+                await saveHistory(asset, symbol, {
+                  symbol,
+                  currency,
+                  prices: saved.prices.map((price) => ({
+                    date: price.date, open: price.open, high: price.high, low: price.low,
+                    close: price.close, adjustedClose: price.adjustedClose, volume: price.volume,
+                  })),
+                });
+                existingPrices = await getMarketPrices(listingId);
+                if (saved.count && existingPrices.length >= saved.count) {
+                  fullHistoryListings.add(listingId);
+                  try { localStorage.setItem(FULL_HISTORY_KEY, JSON.stringify([...fullHistoryListings])); } catch { /* Cache hint only. */ }
+                }
+              }
+            } catch {
+              // Continue with a normal Yahoo Finance fetch if the archive is unavailable.
+            }
+          }
+
           const lastStoredDate = existingPrices.length > 0
             ? existingPrices[existingPrices.length - 1].date
             : undefined;
