@@ -75,6 +75,20 @@ function percentage(value: number | null): string {
   ).toFixed(2)}%`;
 }
 
+function formatMarketPrice(value: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('en-GB', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 4,
+    }).format(value);
+  } catch {
+    return new Intl.NumberFormat('en-GB', {
+      maximumFractionDigits: 4,
+    }).format(value) + ' ' + currency;
+  }
+}
+
 function externalFlowsFromTransactions(
   transactions: Transaction[],
   asOfDate: string
@@ -148,7 +162,10 @@ export default function Analytics({
             lastDate: last.date,
             firstClose: first.adjustedClose ?? first.close,
             lastClose: last.adjustedClose ?? last.close,
-            change: first.close > 0 ? (last.close / first.close) - 1 : null,
+            change:
+              (first.adjustedClose ?? first.close) > 0
+                ? ((last.adjustedClose ?? last.close) / (first.adjustedClose ?? first.close)) - 1
+                : null,
           });
         }
 
@@ -323,8 +340,8 @@ export default function Analytics({
                       <td>{row.firstDate}</td>
                       <td>{row.lastDate}</td>
                       <td>{row.records.toLocaleString('en-GB')}</td>
-                      <td>{new Intl.NumberFormat('en-GB', { style: 'currency', currency: row.currency, maximumFractionDigits: 4 }).format(row.firstClose)}</td>
-                      <td>{new Intl.NumberFormat('en-GB', { style: 'currency', currency: row.currency, maximumFractionDigits: 4 }).format(row.lastClose)}</td>
+                      <td>{formatMarketPrice(row.firstClose, row.currency)}</td>
+                      <td>{formatMarketPrice(row.lastClose, row.currency)}</td>
                       <td>{row.change === null ? '—' : (row.change >= 0 ? '+' : '') + (row.change * 100).toFixed(2) + '%'}</td>
                     </tr>
                   ))}
