@@ -148,7 +148,20 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           const returns = aligned.map(p => p[i - 1] > 0 && p[i] > 0 ? p[i] / p[i - 1] - 1 : NaN);
           if (returns.filter(Number.isFinite).length >= Math.max(1, Math.ceil(assets.length * .6))) rows.push({ date: periods[i], returns });
         }
-        if (!cancelled) { setHistory(rows); setHistoryStatus(rows.length ? rows.length + ' aligned monthly observations loaded from saved adjusted prices.' : 'No matching historical prices found; choose a statistical or parameterized model.'); }
+        if (!cancelled) {
+          setHistory(rows);
+          setAssets(previous => previous.map((asset, index) => {
+            const returns = series[index].slice(1).map((point, j) => {
+              const before = series[index][j].value;
+              return before > 0 && point.value > 0 ? point.value / before - 1 : NaN;
+            }).filter(Number.isFinite);
+            if (returns.length < 12) return asset;
+            const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+            const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, returns.length - 1);
+            return { ...asset, mean: (Math.pow(1 + mean, 12) - 1) * 100, vol: Math.sqrt(variance * 12) * 100 };
+          }));
+          setHistoryStatus(rows.length ? rows.length + ' aligned monthly observations loaded from saved adjusted prices; return assumptions auto-calibrated where history is available.' : 'No matching historical prices found; choose a statistical or parameterized model.');
+        }
       } catch (e) { if (!cancelled) setHistoryStatus('Could not load saved market data: ' + (e instanceof Error ? e.message : String(e))); }
       finally { if (!cancelled) setIsLoadingHistory(false); }
     }
