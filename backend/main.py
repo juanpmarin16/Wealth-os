@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
+import secrets
+import time
 from datetime import date, datetime, timezone
 from typing import Any
+
 
 import pandas as pd
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 import yfinance as yf
-from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi import FastAPI, HTTPException, Query, Body, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -314,3 +321,124 @@ def get_saved_prices(symbol: str = Query(..., min_length=1, max_length=32),
         "adjustedClose": row["adjusted_close"], "volume": row["volume"]} for row in rows]
     return {"symbol": normalized, "count": len(prices), "firstDate": prices[0]["date"] if prices else None,
             "lastDate": prices[-1]["date"] if prices else None, "prices": prices}
+
+
+# Shared-password access for the single-owner Wealth OS portfolio.
+# Configure WEALTH_OS_ACCESS_PASSWORD as a Render secret. Never commit the password.
+def _access_password() -> str:
+    value = os.getenv("WEALTH_OS_ACCESS_PASSWORD", "")
+    if len(value) < 12:
+        raise HTTPException(
+            status_code=503,
+            detail="Portfolio access is not configured. Set WEALTH_OS_ACCESS_PASSWORD (at least 12 characters) on the API service.",
+        )
+    return value
+
+
+def _make_session_token(password: str) -> str:
+    payload = f"{int(time.time())}.{secrets.token_urlsafe(24)}"
+    signature = hmac.new(password.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    raw = f"{payload}.{signature}".encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _verify_session_token(token: str, password: str) -> bool:
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode()).decode()
+        timestamp, nonce, signature = decoded.split(".", 2)
+        issued_at = int(timestamp)
+        if issued_at > int(time.time()) + 60 or int(time.time()) - issued_at > 7 * 24 * 60 * 60:
+            return False
+        payload = f"{timestamp}.{nonce}"
+        expected = hmac.new(password.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature, expected)
+    except (ValueError, TypeError, UnicodeError):
+        return False
+
+
+def _require_portfolio_access(authorization: str | None) -> str:
+    password = _access_password()
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Sign in to access your portfolio.")
+    token = authorization[7:].strip()
+    if not _verify_session_token(token, password):
+        raise HTTPException(status_code=401, detail="Your session has expired. Please sign in again.")
+    return password
+
+
+def _ensure_portfolio_table(connection: psycopg.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_state (
+            id SMALLINT PRIMARY KEY CHECK (id = 1),
+            payload JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+
+
+@app.post("/api/auth/login")
+def portfolio_login(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    password = _access_password()
+    supplied = str(payload.get("password", ""))
+    if not hmac.compare_digest(supplied.encode(), password.encode()):
+        # Avoid revealing whether the account or database exists.
+        raise HTTPException(status_code=401, detail="Incorrect password.")
+    return {"token": _make_session_token(password), "expiresInSeconds": 604800}
+
+
+@app.get("/api/portfolio")
+def get_portfolio(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_portfolio_access(authorization)
+    try:
+        with psycopg.connect(_database_url(), row_factory=dict_row, connect_timeout=10) as connection:
+            _ensure_portfolio_table(connection)
+            row = connection.execute("SELECT payload, updated_at FROM portfolio_state WHERE id = 1").fetchone()
+        if row is None:
+            return {"exists": False, "portfolio": None, "updatedAt": None}
+        return {"exists": True, "portfolio": row["payload"], "updatedAt": row["updated_at"].isoformat()}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unable to read portfolio state")
+        raise HTTPException(status_code=503, detail="Could not read portfolio data from PostgreSQL.") from exc
+
+
+@app.put("/api/portfolio")
+def put_portfolio(
+    payload: dict[str, Any] = Body(...),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_portfolio_access(authorization)
+    assets = payload.get("assets")
+    transactions = payload.get("transactions")
+    opening_cash = payload.get("openingCash")
+    opening_date = payload.get("openingDate", "")
+    if not isinstance(assets, list) or not isinstance(transactions, list):
+        raise HTTPException(status_code=400, detail="Portfolio assets and transactions must be arrays.")
+    if not isinstance(opening_cash, (int, float)) or isinstance(opening_cash, bool) or not (0 <= opening_cash < 1e15):
+        raise HTTPException(status_code=400, detail="openingCash must be a non-negative number.")
+    if not isinstance(opening_date, str) or len(opening_date) > 10:
+        raise HTTPException(status_code=400, detail="openingDate must be a date string.")
+    if len(assets) > 5000 or len(transactions) > 100000:
+        raise HTTPException(status_code=413, detail="Portfolio is larger than the supported limit.")
+    clean_payload = {
+        "assets": assets,
+        "transactions": transactions,
+        "openingCash": float(opening_cash),
+        "openingDate": opening_date,
+    }
+    try:
+        with psycopg.connect(_database_url(), connect_timeout=10) as connection:
+            _ensure_portfolio_table(connection)
+            connection.execute("""
+                INSERT INTO portfolio_state (id, payload, updated_at)
+                VALUES (1, %s, NOW())
+                ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
+            """, (Jsonb(clean_payload),))
+        return {"saved": True, "updatedAt": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unable to save portfolio state")
+        raise HTTPException(status_code=503, detail="Could not save portfolio data to PostgreSQL.") from exc
