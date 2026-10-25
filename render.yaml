@@ -14,3 +14,5 @@ services:
         value: "*"
       - key: DATABASE_URL
         sync: false
+      - key: WEALTH_OS_ACCESS_PASSWORD
+        sync: false
