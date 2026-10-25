@@ -1931,6 +1931,7 @@ function App() {
                 0
               ) + openingCash
             }
+            openingCash={openingCash}
             openingDate={openingDate}
             transactions={transactions}
           />
