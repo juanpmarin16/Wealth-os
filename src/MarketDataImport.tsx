@@ -300,8 +300,17 @@ export default function MarketDataImport({
         `Updated ${updated} of ${assets.length} portfolio assets and processed ${totalPrices.toLocaleString()} daily price records. Assets without a completed full-history import are backfilled with all history available from Yahoo Finance; later pulls refresh from the latest saved date.${skippedText}`,
       );
 
+      const issues: string[] = [];
       if (failures.length > 0) {
-        setError(`Some assets could not be updated:\n${failures.join("\n")}`);
+        issues.push(`Some assets could not be updated:\n${failures.join("\n")}`);
+      }
+      if (durabilityWarnings.length > 0) {
+        issues.push(
+          `Market data was imported locally, but could not be confirmed in the durable database:\n${durabilityWarnings.join("\n")}\n\nCheck the market-data API and PostgreSQL connection, then run Pull Market Data again.`,
+        );
+      }
+      if (issues.length > 0) {
+        setError(issues.join("\n\n"));
       } else if (updated === 0) {
         setError("No market data was updated. Check that your portfolio contains supported market symbols.");
       }
