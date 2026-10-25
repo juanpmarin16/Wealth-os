@@ -265,7 +265,7 @@ def save_prices(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     try:
         with psycopg.connect(_database_url(), row_factory=dict_row, connect_timeout=10) as connection:
             _ensure_market_table(connection)
-            connection.executemany("""
+            connection.cursor().executemany("""
                 INSERT INTO market_prices
                 (symbol, price_date, currency, provider, open, high, low, close, adjusted_close, volume, fetched_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
