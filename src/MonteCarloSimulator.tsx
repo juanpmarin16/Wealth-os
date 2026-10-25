@@ -118,6 +118,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
       : [{ name: 'Global Equities', ticker: 'Equity', weight: 60, mean: 7, vol: 16 }, { name: 'Bonds', ticker: 'Bond', weight: 40, mean: 3.5, vol: 7 }];
   });
   const [results, setResults] = useState<PathSummary[] | null>(null);
+  const [error, setError] = useState('');
   const [model, setModel] = useState<Model>('historical');
   const [distribution, setDistribution] = useState<Distribution>('student');
   const [df, setDf] = useState('5');
@@ -276,6 +277,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         <div className="mc-allocation-foot"><span>Total entered allocation</span><strong className={Math.abs(totalWeight - 100) < 0.01 ? 'is-balanced' : ''}>{totalWeight.toFixed(1)}%</strong></div>
         <button className="primary-button mc-run-button" onClick={runSimulation} disabled={!valid || isLoadingHistory}><span>▶</span> Run {Number(runs).toLocaleString('en-GB')} simulations</button>
         {!valid && <p className="mc-validation">Enter a valid initial value, horizon, number of paths and positive total allocation.</p>}
+        {error && <p className="mc-validation" role="alert">{error}</p>}
         <p className="mc-history-status">{isLoadingHistory ? 'Loading market history…' : historyStatus}</p><p className="mc-disclaimer">Historical bootstrap samples aligned monthly returns from locally saved adjusted prices and preserves observed cross-asset co-movement. Statistical and parameterized models use the assumptions above. Results are hypothetical and exclude taxes and fees.</p>
       </section>
       <section className="mc-results">
