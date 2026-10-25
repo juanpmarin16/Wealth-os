@@ -72,6 +72,8 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
     const r = monthlyAssetReturns[month].reduce((v, ret, i) => v + currentWeights[i] * ret, 0);
     growthFactor *= Math.max(.05, 1 + r);
     balance = Math.max(0, balance * (1 + r));
+    if (1 + r > 0) currentWeights = currentWeights.map((weight, i) => weight * (1 + monthlyAssetReturns[month][i]) / (1 + r));
+    if (rebalancing === 'monthly' || (rebalancing === 'annual' && (month + 1) % 12 === 0)) currentWeights = [...weights];
     if ((month + 1) % cashflowEvery === 0) {
       let flow = cashflow * (inflationAdjusted ? cumulativeInflation : 1) / frequency;
       if (flowType === 'withdrawal') flow = -flow;
