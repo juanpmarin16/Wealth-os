@@ -358,7 +358,7 @@ export default function Analytics({
           const last = orderedPrices[orderedPrices.length - 1];
           const rawCurrency = String(last.currency || listing.quoteCurrency || 'USD');
           const upperCurrency = rawCurrency.toUpperCase();
-          const isPenceQuote = rawCurrency === 'GBp' || upperCurrency === 'GBX' || upperCurrency === 'GBPENCE';
+          const isPenceQuote = rawCurrency === 'GBp' || upperCurrency === 'GBX' || upperCurrency === 'GBPENCE' || (asset.ticker.toUpperCase() === 'LDGL' && upperCurrency === 'GBP');
           const quoteCurrency = isPenceQuote ? 'GBP' : upperCurrency;
           let fxPoints: PricePoint[] = [];
 
@@ -495,63 +495,6 @@ export default function Analytics({
     openingValue -
     netExternalContributions;
 
-  const xirr = useMemo(() => {
-    if (
-      !startDate ||
-      startDate >= asOfDate ||
-      openingValue <= 0 ||
-      currentValue <= 0
-    ) {
-      return null;
-    }
-
-    const cashFlows = buildXirrCashFlows({
-      startDate,
-      openingValue,
-      externalFlows,
-      endDate: asOfDate,
-      endingValue: currentValue,
-    });
-
-    return calculateXirr(cashFlows);
-  }, [
-    startDate,
-    asOfDate,
-    openingValue,
-    currentValue,
-    externalFlows,
-    portfolioValuations,
-  ]);
-
-  const twr = useMemo(() => {
-    if (
-      !startDate ||
-      startDate >= asOfDate ||
-      !Number.isFinite(openingValue) ||
-      openingValue < 0 ||
-      !Number.isFinite(currentValue) ||
-      currentValue < 0
-    ) {
-      return null;
-    }
-
-    const valuations = portfolioValuations.length > 1
-      ? portfolioValuations
-      : [
-          { date: startDate, value: openingValue },
-          { date: asOfDate, value: currentValue },
-        ];
-
-    return calculateTwr(valuations, externalFlows);
-  }, [
-    startDate,
-    asOfDate,
-    openingValue,
-    currentValue,
-    externalFlows,
-  ]);
-
-
   const portfolioValuations = useMemo((): PortfolioValuation[] => {
     const allDates = Object.values(marketSeries).flatMap((points) => points.map((point) => point.date));
     if (allDates.length === 0) return [];
@@ -571,7 +514,6 @@ export default function Analytics({
 
     const initialQuantities = new Map<string, number>();
     const staticOpeningValues = new Map<string, number>();
-    const qualityWarnings = new Set<string>();
 
     for (const asset of assets) {
       const history = marketSeries[asset.ticker] ?? [];
@@ -580,7 +522,6 @@ export default function Analytics({
         initialQuantities.set(asset.ticker, asset.openingValue / basePrice.value);
       } else if (asset.openingValue > 0) {
         staticOpeningValues.set(asset.ticker, asset.openingValue);
-        qualityWarnings.add(`${asset.ticker} has no usable price history; its opening value is held flat.`);
       }
     }
 
@@ -637,6 +578,64 @@ export default function Analytics({
       return Number.isFinite(value) && value >= 0 ? [{ date, value }] : [];
     }).filter((point, index, points) => index === 0 || point.date !== points[index - 1].date);
   }, [assets, marketSeries, transactions, openingCash, startDate, asOfDate]);
+
+
+  const xirr = useMemo(() => {
+    if (
+      !startDate ||
+      startDate >= asOfDate ||
+      openingValue <= 0 ||
+      currentValue <= 0
+    ) {
+      return null;
+    }
+
+    const cashFlows = buildXirrCashFlows({
+      startDate,
+      openingValue,
+      externalFlows,
+      endDate: asOfDate,
+      endingValue: currentValue,
+    });
+
+    return calculateXirr(cashFlows);
+  }, [
+    startDate,
+    asOfDate,
+    openingValue,
+    currentValue,
+    externalFlows,
+    portfolioValuations,
+  ]);
+
+  const twr = useMemo(() => {
+    if (
+      !startDate ||
+      startDate >= asOfDate ||
+      !Number.isFinite(openingValue) ||
+      openingValue < 0 ||
+      !Number.isFinite(currentValue) ||
+      currentValue < 0
+    ) {
+      return null;
+    }
+
+    const valuations = portfolioValuations.length > 1
+      ? portfolioValuations
+      : [
+          { date: startDate, value: openingValue },
+          { date: asOfDate, value: currentValue },
+        ];
+
+    return calculateTwr(valuations, externalFlows);
+  }, [
+    startDate,
+    asOfDate,
+    openingValue,
+    currentValue,
+    externalFlows,
+  ]);
+
 
   const portfolioHistoryWarnings = useMemo(() => {
     const warnings: string[] = [];
