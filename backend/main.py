@@ -87,8 +87,13 @@ def history(
             detail=f"Unsupported period. Choose one of: {', '.join(sorted(PERIODS))}.",
         )
 
+    ticker = yf.Ticker(normalized_symbol)
+    frame: pd.DataFrame | None = None
+    provider_errors: list[str] = []
+
+    # Try the per-ticker history endpoint first. Some yfinance/Yahoo responses
+    # fail here intermittently, so fall back to the download endpoint.
     try:
-        ticker = yf.Ticker(normalized_symbol)
         frame = ticker.history(
             period=PERIOD_TO_START[normalized_period],
             interval="1d",
@@ -96,23 +101,47 @@ def history(
             actions=False,
             repair=True,
             raise_errors=True,
-            timeout=20,
+            timeout=25,
         )
     except Exception as exc:
-        logger.warning("yfinance request failed for %s: %s", normalized_symbol, exc)
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"Yahoo Finance did not return data for {normalized_symbol}. "
-                "Check the ticker or try again later."
-            ),
-        ) from exc
+        provider_errors.append(f"Ticker.history: {type(exc).__name__}: {exc}")
+        logger.warning("yfinance history failed for %s: %s", normalized_symbol, exc)
 
     if frame is None or frame.empty:
+        try:
+            frame = yf.download(
+                tickers=normalized_symbol,
+                period=PERIOD_TO_START[normalized_period],
+                interval="1d",
+                auto_adjust=False,
+                actions=False,
+                progress=False,
+                threads=False,
+                timeout=25,
+                multi_level_index=False,
+            )
+        except Exception as exc:
+            provider_errors.append(f"yf.download: {type(exc).__name__}: {exc}")
+            logger.warning("yfinance download failed for %s: %s", normalized_symbol, exc)
+
+    if frame is None or frame.empty:
+        if provider_errors:
+            diagnostic = " | ".join(provider_errors)[:900]
+            logger.error("All Yahoo Finance methods failed for %s: %s", normalized_symbol, diagnostic)
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Yahoo Finance request failed for {normalized_symbol}. "
+                    f"Technical details: {diagnostic}"
+                ),
+            )
         raise HTTPException(
             status_code=404,
-            detail=f"No historical prices were found for {normalized_symbol}.",
+            detail=f"Yahoo Finance returned an empty history for {normalized_symbol}. Check the ticker or try again later.",
         )
+
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
 
     frame = frame.copy()
     frame.index = pd.to_datetime(frame.index)
