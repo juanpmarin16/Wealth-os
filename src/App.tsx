@@ -532,7 +532,7 @@ function App() {
     async function latestFxRate(symbol: string): Promise<number | null> {
       try {
         const response = await fetch(
-          new URL('/api/history?symbol=' + encodeURIComponent(symbol) + '&period=5d', PORTFOLIO_API_URL).toString(),
+          new URL('/api/history?symbol=' + encodeURIComponent(symbol) + '&period=1y', PORTFOLIO_API_URL).toString(),
           { headers: { Accept: 'application/json' } },
         );
         const payload: unknown = await response.json();
@@ -1947,7 +1947,7 @@ function App() {
               if (fxCurrency !== 'EUR') {
                 try {
                   const fxSymbol = `EUR${fxCurrency}=X`;
-                  const fxResponse = await fetch(`${PORTFOLIO_API_URL}/api/history?symbol=${encodeURIComponent(fxSymbol)}&period=5d`);
+                  const fxResponse = await fetch(`${PORTFOLIO_API_URL}/api/history?symbol=${encodeURIComponent(fxSymbol)}&period=1y`);
                   const fxPayload: unknown = await fxResponse.json();
                   if (fxResponse.ok && isRecord(fxPayload) && Array.isArray(fxPayload.prices)) {
                     const latestFx = (fxPayload.prices as Array<Record<string, unknown>>)
