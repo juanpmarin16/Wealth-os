@@ -1,6 +1,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
-import { getListingsForInstrument, getMarketPrices } from './data/database';
+import { getListingsForInstrument, getMarketPrices, saveInstrument, saveListing, saveMarketPrices } from './data/database';
+import type { AssetType } from './data/models';
 import {
   buildXirrCashFlows,
   calculateTwr,
@@ -25,6 +26,38 @@ type AnalyticsAsset = {
   currentPrice: number;
   openingValue: number;
 };
+
+const MARKET_DATA_API_URL = 'https://wealth-os-market-data.onrender.com';
+
+const YAHOO_SYMBOLS: Record<string, string> = {
+  VGWL: 'VGWL.DE',
+  EQQQ: 'EQQQ.DE',
+  BTC: 'BTC-USD',
+  LDGL: 'LDGL.L',
+};
+
+function safeId(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_');
+}
+
+function inferAssetType(category: string): AssetType {
+  const normalized = category.toLowerCase();
+  if (normalized.includes('crypto') || normalized.includes('bitcoin')) return 'crypto';
+  if (normalized.includes('bond') || normalized.includes('fixed income')) return 'bond';
+  if (normalized.includes('commodit') || normalized.includes('gold')) return 'commodity';
+  if (normalized.includes('real estate') || normalized.includes('property')) return 'real_estate';
+  if (normalized.includes('cash')) return 'cash';
+  if (normalized.includes('private equity')) return 'private_equity';
+  if (normalized.includes('fund')) return 'fund';
+  if (normalized.includes('stock')) return 'stock';
+  return 'etf';
+}
+
+function yahooSymbolFor(ticker: string): string | undefined {
+  const normalized = ticker.trim().toUpperCase();
+  if (!normalized || ['OTHER', 'EUR', 'CASH'].includes(normalized)) return undefined;
+  return YAHOO_SYMBOLS[normalized] ?? normalized;
+}
 
 type MarketHistoryRow = {
   ticker: string;
@@ -136,18 +169,90 @@ export default function Analytics({
         const rows: MarketHistoryRow[] = [];
 
         for (const asset of assets) {
-          const normalizedTicker = asset.ticker.trim().toUpperCase();
-          const safeTicker = normalizedTicker.replace(/[^A-Z0-9_-]/g, '_');
-          const instrumentId = 'instrument_' + safeTicker;
-          const listings = await getListingsForInstrument(instrumentId);
-          const listing = listings.find(
+          const symbol = yahooSymbolFor(asset.ticker);
+          if (!symbol) continue;
+
+          const instrumentId = 'instrument_' + safeId(asset.ticker);
+          const listingId = 'listing_yahoo_' + safeId(symbol);
+          let listings = await getListingsForInstrument(instrumentId);
+          let listing = listings.find(
             (item) => item.provider === 'yahoo-finance' && item.status === 'active'
           );
+          let prices = listing ? await getMarketPrices(listing.id) : [];
 
-          if (!listing) continue;
+          // Restore the durable PostgreSQL archive into this browser's IndexedDB
+          // automatically, rather than requiring the user to click Pull Market Data.
+          if (prices.length === 0) {
+            const response = await fetch(
+              new URL('/api/saved-prices?symbol=' + encodeURIComponent(symbol), MARKET_DATA_API_URL).toString(),
+              { headers: { Accept: 'application/json' } }
+            );
 
-          const prices = await getMarketPrices(listing.id);
-          if (prices.length === 0) continue;
+            if (response.ok) {
+              const payload: unknown = await response.json();
+              if (
+                typeof payload === 'object' &&
+                payload !== null &&
+                'prices' in payload &&
+                Array.isArray(payload.prices) &&
+                payload.prices.length > 0
+              ) {
+                const saved = payload as {
+                  prices: Array<{
+                    date: string;
+                    currency?: string;
+                    open?: number | null;
+                    high?: number | null;
+                    low?: number | null;
+                    close: number;
+                    adjustedClose?: number | null;
+                    volume?: number | null;
+                  }>;
+                };
+                const valid = saved.prices.filter(
+                  (price) => typeof price.date === 'string' && Number.isFinite(price.close) && price.close > 0
+                );
+                if (valid.length > 0) {
+                  const currency = valid.find((price) => price.currency)?.currency || 'USD';
+                  await saveInstrument({
+                    id: instrumentId,
+                    name: asset.name,
+                    assetType: inferAssetType(asset.category),
+                    baseCurrency: currency,
+                    status: 'active',
+                    notes: 'Restored automatically from the durable market-data archive.',
+                  });
+                  await saveListing({
+                    id: listingId,
+                    instrumentId,
+                    provider: 'yahoo-finance',
+                    symbol,
+                    quoteCurrency: currency,
+                    isPrimary: true,
+                    status: 'active',
+                    lastVerifiedAt: new Date().toISOString(),
+                  });
+                  await saveMarketPrices(valid.map((price) => ({
+                    listingId,
+                    date: price.date,
+                    provider: 'yahoo-finance' as const,
+                    currency,
+                    close: price.close,
+                    adjustedClose: price.adjustedClose ?? price.close,
+                    open: price.open ?? undefined,
+                    high: price.high ?? undefined,
+                    low: price.low ?? undefined,
+                    volume: price.volume ?? undefined,
+                  })));
+                  listings = await getListingsForInstrument(instrumentId);
+                  listing = listings.find((item) => item.id === listingId);
+                  prices = listing ? await getMarketPrices(listing.id) : [];
+                }
+              }
+            }
+          }
+
+          if (!listing || prices.length === 0) continue;
 
           const first = prices[0];
           const last = prices[prices.length - 1];
@@ -187,7 +292,7 @@ export default function Analytics({
     return () => {
       cancelled = true;
     };
-  }, [assets]);
+
 
   const validTransactions = useMemo(
     () =>
