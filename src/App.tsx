@@ -325,7 +325,6 @@ function calculateLedger(
             : 0;
 
         asset.quantity = newQuantity;
-        asset.currentPrice = tx.price;
         break;
       }
 
@@ -334,7 +333,6 @@ function calculateLedger(
 
         const quantitySold = Math.min(tx.quantity, asset.quantity);
         asset.quantity = Math.max(0, asset.quantity - quantitySold);
-        asset.currentPrice = tx.price;
 
         if (asset.quantity < 1e-8) {
           asset.quantity = 0;
@@ -376,6 +374,58 @@ function App() {
   const [transactionSearch, setTransactionSearch] = useState('');
   const [transactionTypeFilter, setTransactionTypeFilter] = useState('All');
   const [notice, setNotice] = useState('');
+
+  const [marketPriceStatus, setMarketPriceStatus] = useState('Loading saved market prices…');
+
+  useEffect(() => {
+    let cancelled = false;
+    const symbols: Record<string, string> = {
+      VGWL: 'VGWL.DE',
+      EQQQ: 'EQQQ.DE',
+      BTC: 'BTC-EUR',
+      LDGL: 'LDGL.DE',
+    };
+
+    async function hydrateLatestPrices() {
+      const results = await Promise.all(initialAssets.map(async (asset) => {
+        const symbol = symbols[asset.ticker.toUpperCase()];
+        if (!symbol) return null;
+        try {
+          const response = await fetch(
+            new URL('/api/saved-prices?symbol=' + encodeURIComponent(symbol), PORTFOLIO_API_URL).toString(),
+            { headers: { Accept: 'application/json' } },
+          );
+          if (!response.ok) return null;
+          const payload: unknown = await response.json();
+          if (!isRecord(payload) || !Array.isArray(payload.prices)) return null;
+          const valid = payload.prices.filter((row): row is Record<string, unknown> =>
+            isRecord(row) && typeof row.date === 'string' &&
+            validNumber(row.close) && row.close > 0
+          ).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+          const latest = valid[valid.length - 1];
+          if (!latest || !validNumber(latest.close)) return null;
+          return { ticker: asset.ticker.toUpperCase(), price: latest.close, date: String(latest.date), symbol };
+        } catch {
+          return null;
+        }
+      }));
+
+      if (cancelled) return;
+      const quotes = results.filter((item): item is { ticker: string; price: number; date: string; symbol: string } => item !== null);
+      if (quotes.length > 0) {
+        setInitialAssets((current) => current.map((asset) => {
+          const quote = quotes.find((item) => item.ticker === asset.ticker.toUpperCase());
+          return quote ? { ...asset, currentPrice: quote.price } : asset;
+        }));
+        setMarketPriceStatus('Latest saved prices loaded: ' + quotes.map((quote) => quote.ticker + ' (' + quote.date + ')').join(', '));
+      } else {
+        setMarketPriceStatus('No saved EUR-quoted market prices found for the current holdings. Import the corresponding symbols in Market Data.');
+      }
+    }
+
+    void hydrateLatestPrices();
+    return () => { cancelled = true; };
+  }, []);
 
   const [assetForm, setAssetForm] = useState({
     name: '',
