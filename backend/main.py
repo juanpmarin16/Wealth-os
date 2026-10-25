@@ -7,8 +7,10 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import pandas as pd
+import psycopg
+from psycopg.rows import dict_row
 import yfinance as yf
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -17,7 +19,7 @@ logger = logging.getLogger("wealth-os-market-data")
 app = FastAPI(
     title="Wealth OS Market Data API",
     description="Historical market data powered by yfinance and Yahoo Finance.",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 # Market data is public. Override the wildcard with comma-separated origins
@@ -31,7 +33,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -68,7 +70,7 @@ def root() -> dict[str, str]:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "wealth-os-market-data"}
+    return {"status": "ok", "service": "wealth-os-market-data", "durableStorage": "configured" if os.getenv("DATABASE_URL", "").strip() else "not-configured"}
 
 
 @app.get("/api/history")
@@ -203,3 +205,112 @@ def history(
         "count": len(prices),
         "prices": prices,
     }
+
+
+# Durable price history. Configure DATABASE_URL with a managed PostgreSQL database.
+def _database_url() -> str:
+    value = os.getenv("DATABASE_URL", "").strip()
+    if not value:
+        raise HTTPException(status_code=503, detail="Durable market-data storage is not configured. Set DATABASE_URL to a managed PostgreSQL database on the market-data service.")
+    return "postgresql://" + value[len("postgres://"):] if value.startswith("postgres://") else value
+
+
+def _ensure_market_table(connection: psycopg.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS market_prices (
+            symbol TEXT NOT NULL,
+            price_date DATE NOT NULL,
+            currency TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT 'yahoo-finance',
+            open DOUBLE PRECISION, high DOUBLE PRECISION, low DOUBLE PRECISION,
+            close DOUBLE PRECISION NOT NULL, adjusted_close DOUBLE PRECISION,
+            volume DOUBLE PRECISION, fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (symbol, price_date, provider)
+        )
+    """)
+    connection.execute("CREATE INDEX IF NOT EXISTS market_prices_symbol_date_idx ON market_prices (symbol, price_date)")
+
+
+@app.post("/api/saved-prices")
+def save_prices(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    symbol = str(payload.get("symbol", "")).strip().upper()
+    currency = str(payload.get("currency", "")).strip().upper()
+    prices = payload.get("prices")
+    if not SYMBOL_PATTERN.fullmatch(symbol):
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol.")
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        raise HTTPException(status_code=400, detail="A valid three-letter currency is required.")
+    if not isinstance(prices, list) or not prices:
+        raise HTTPException(status_code=400, detail="prices must be a non-empty array.")
+    if len(prices) > 20000:
+        raise HTTPException(status_code=413, detail="A single import cannot exceed 20,000 daily records.")
+
+    prepared: list[tuple[Any, ...]] = []
+    for item in prices:
+        if not isinstance(item, dict):
+            continue
+        try:
+            price_date = date.fromisoformat(str(item.get("date", "")))
+            close = safe_float(item.get("close"))
+            if close is None or close <= 0:
+                continue
+            prepared.append((symbol, price_date, currency, "yahoo-finance",
+                safe_float(item.get("open")), safe_float(item.get("high")), safe_float(item.get("low")),
+                close, safe_float(item.get("adjustedClose")), safe_float(item.get("volume"))))
+        except (TypeError, ValueError):
+            continue
+    if not prepared:
+        raise HTTPException(status_code=400, detail="No valid dated closing prices were supplied.")
+
+    try:
+        with psycopg.connect(_database_url(), row_factory=dict_row, connect_timeout=10) as connection:
+            _ensure_market_table(connection)
+            connection.executemany("""
+                INSERT INTO market_prices
+                (symbol, price_date, currency, provider, open, high, low, close, adjusted_close, volume, fetched_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (symbol, price_date, provider) DO UPDATE SET
+                  currency=EXCLUDED.currency, open=EXCLUDED.open, high=EXCLUDED.high,
+                  low=EXCLUDED.low, close=EXCLUDED.close, adjusted_close=EXCLUDED.adjusted_close,
+                  volume=EXCLUDED.volume, fetched_at=NOW()
+            """, prepared)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unable to persist market prices")
+        raise HTTPException(status_code=503, detail="Could not persist market data. Verify DATABASE_URL and database connectivity.") from exc
+    return {"symbol": symbol, "saved": len(prepared), "firstDate": min(x[1] for x in prepared).isoformat(),
+            "lastDate": max(x[1] for x in prepared).isoformat(), "durable": True}
+
+
+@app.get("/api/saved-prices")
+def get_saved_prices(symbol: str = Query(..., min_length=1, max_length=32),
+                     start: date | None = Query(None), end: date | None = Query(None)) -> dict[str, Any]:
+    normalized = symbol.strip().upper()
+    if not SYMBOL_PATTERN.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol.")
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="start cannot be after end.")
+    try:
+        with psycopg.connect(_database_url(), row_factory=dict_row, connect_timeout=10) as connection:
+            _ensure_market_table(connection)
+            query = "SELECT price_date, currency, open, high, low, close, adjusted_close, volume FROM market_prices WHERE symbol=%s"
+            params: list[Any] = [normalized]
+            if start:
+                query += " AND price_date >= %s"
+                params.append(start)
+            if end:
+                query += " AND price_date <= %s"
+                params.append(end)
+            query += " ORDER BY price_date ASC"
+            rows = connection.execute(query, params).fetchall()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unable to read saved market prices")
+        raise HTTPException(status_code=503, detail="Could not read durable market data. Verify DATABASE_URL and database connectivity.") from exc
+    prices = [{"date": row["price_date"].isoformat(), "currency": row["currency"],
+        "open": row["open"], "high": row["high"], "low": row["low"], "close": row["close"],
+        "adjustedClose": row["adjusted_close"], "volume": row["volume"]} for row in rows]
+    return {"symbol": normalized, "count": len(prices), "firstDate": prices[0]["date"] if prices else None,
+            "lastDate": prices[-1]["date"] if prices else None, "prices": prices}
