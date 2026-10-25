@@ -527,7 +527,7 @@ export default function Analytics({
 
     const dates = [...new Set(allDates.filter((date) => date >= baselineDate))].sort();
     const orderedTransactions = [...transactions]
-      .filter((tx) => /^\\d{4}-\\d{2}-\\d{2}$/.test(tx.date) && tx.date <= asOfDate)
+      .filter((tx) => /^\d{4}-\d{2}-\d{2}$/.test(tx.date) && tx.date <= asOfDate)
       .sort((left, right) => left.date.localeCompare(right.date) || (left.id ?? '').localeCompare(right.id ?? ''));
 
     return dates.flatMap((date) => {
