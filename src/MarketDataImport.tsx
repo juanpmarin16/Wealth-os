@@ -4,6 +4,7 @@ import type { AssetType } from "./data/models";
 
 const MARKET_DATA_API_URL = "https://wealth-os-market-data.onrender.com";
 const SYMBOL_MAP_KEY = "wealth-os-market-data-symbol-mappings";
+const FULL_HISTORY_KEY = "wealth-os-full-history-imported-listings";
 
 type PortfolioAsset = {
   id: string;
@@ -84,6 +85,19 @@ function readSymbolMappings(): Record<string, string> {
     );
   } catch {
     return {};
+  }
+}
+
+function readFullHistoryListings(): string[] {
+  try {
+    const raw = localStorage.getItem(FULL_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
   }
 }
 
@@ -205,6 +219,7 @@ export default function MarketDataImport({
     let totalPrices = 0;
     const failures: string[] = [];
     const skipped: string[] = [];
+    const fullHistoryListings = new Set(readFullHistoryListings());
 
     try {
       for (const asset of assets) {
@@ -220,10 +235,23 @@ export default function MarketDataImport({
           const lastStoredDate = existingPrices.length > 0
             ? existingPrices[existingPrices.length - 1].date
             : undefined;
-          // No start date means first import: download all history available from Yahoo Finance.
-          // Later runs overlap the latest saved date so corrections are refreshed and duplicate records replaced.
-          const data = await fetchHistory(symbol, lastStoredDate);
+          const fullHistoryAlreadyImported = fullHistoryListings.has(listingId);
+          // Existing one-year records are not proof that the complete history was imported.
+          // Until a full-history import succeeds, request max history and backfill older dates.
+          // After that, overlap the latest saved date to refresh corrections without duplicating records.
+          const data = await fetchHistory(
+            symbol,
+            fullHistoryAlreadyImported ? lastStoredDate : undefined,
+          );
           const count = await saveHistory(asset, symbol, data);
+          if (!fullHistoryAlreadyImported) {
+            fullHistoryListings.add(listingId);
+            try {
+              localStorage.setItem(FULL_HISTORY_KEY, JSON.stringify([...fullHistoryListings]));
+            } catch {
+              // If storage is unavailable, the next run safely repeats the full-history import.
+            }
+          }
           updated += 1;
           totalPrices += count;
 
@@ -252,7 +280,7 @@ export default function MarketDataImport({
         ? ` Skipped assets without a market symbol: ${skipped.join(", ")}.`
         : "";
       setMessage(
-        `Updated ${updated} of ${assets.length} portfolio assets and processed ${totalPrices.toLocaleString()} daily price records. First imports download all history available from Yahoo Finance; later pulls refresh from the latest saved date.${skippedText}`,
+        `Updated ${updated} of ${assets.length} portfolio assets and processed ${totalPrices.toLocaleString()} daily price records. Assets without a completed full-history import are backfilled with all history available from Yahoo Finance; later pulls refresh from the latest saved date.${skippedText}`,
       );
 
       if (failures.length > 0) {
@@ -276,7 +304,7 @@ export default function MarketDataImport({
       <section className="panel" style={{ padding: 22 }}>
         <h2 style={{ marginTop: 0 }}>Market Data</h2>
         <p style={{ color: "var(--muted)", lineHeight: 1.7 }}>
-          Pull daily market data for your portfolio. The first import downloads all history available from Yahoo Finance; later pulls fetch only data from the latest saved date, refreshing overlapping records. Prices are saved locally in this browser, and existing records are preserved if a download fails.
+          Pull daily market data for your portfolio. Each asset is first backfilled with all history available from Yahoo Finance, including any existing partial history; later pulls fetch only data from the latest saved date, refreshing overlapping records. Prices are saved locally in this browser, and existing records are preserved if a download fails.
         </p>
 
         <button
