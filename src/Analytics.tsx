@@ -411,7 +411,7 @@ export default function Analytics({
             ticker: asset.ticker,
             name: asset.name,
             symbol: listing.symbol,
-            currency: last.currency,
+            currency: isPenceQuote ? 'GBp' : rawCurrency,
             records: orderedPrices.length,
             firstDate: first.date,
             lastDate: last.date,
@@ -519,7 +519,7 @@ export default function Analytics({
       .filter((tx) => /^\d{4}-\d{2}-\d{2}$/.test(tx.date) && tx.date > requestedStart && tx.date <= asOfDate)
       .sort((left, right) => left.date.localeCompare(right.date) || (left.id ?? '').localeCompare(right.id ?? ''));
 
-    return dates.flatMap((date) => {
+    const reconstructed = dates.flatMap((date) => {
       let cash = openingCash;
       const quantities = new Map(initialQuantities);
       const staticValues = new Map(staticOpeningValues);
@@ -562,8 +562,16 @@ export default function Analytics({
 
       const value = assetsValue + cash;
       return Number.isFinite(value) && value >= 0 ? [{ date, value }] : [];
-    }).filter((point, index, points) => index === 0 || point.date !== points[index - 1].date);
-  }, [assets, marketSeries, transactions, openingCash, startDate, asOfDate]);
+    });
+    if (reconstructed.length === 0) return reconstructed;
+    const latest = reconstructed[reconstructed.length - 1];
+    if (latest.date === asOfDate) {
+      reconstructed[reconstructed.length - 1] = { date: asOfDate, value: currentValue };
+    } else if (latest.date < asOfDate && Number.isFinite(currentValue) && currentValue >= 0) {
+      reconstructed.push({ date: asOfDate, value: currentValue });
+    }
+    return reconstructed;
+  }, [assets, marketSeries, transactions, openingCash, startDate, asOfDate, currentValue]);
 
 
   const xirr = useMemo(() => {
