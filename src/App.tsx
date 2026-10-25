@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import Analytics from './Analytics';
 import MarketDataImport from './MarketDataImport';
 import './App.css';
@@ -52,6 +52,7 @@ const TRANSACTIONS_KEY = 'wealth-os-transactions';
 const CASH_KEY = 'wealth-os-opening-cash';
 const VERSION_KEY = 'wealth-os-accounting-version';
 const OPENING_DATE_KEY = 'wealth-os-opening-date';
+const PORTFOLIO_API_URL = 'https://wealth-os-market-data.onrender.com';
 
 const DEMO_ASSETS: Asset[] = [
   { id: '1', name: 'Global Equity ETF', ticker: 'VGWL', category: 'Equities', openingValue: 112400, quantity: 0, currentPrice: 0, averageCost: 0 },
@@ -396,6 +397,126 @@ function App() {
     notes: '',
   });
 
+  const [accessToken, setAccessToken] = useState<string>(() => {
+    try { return sessionStorage.getItem('wealth-os-session-token') ?? ''; } catch { return ''; }
+  });
+  const [accessPassword, setAccessPassword] = useState('');
+  const [accessStatus, setAccessStatus] = useState<'signedOut' | 'checking' | 'signedIn'>(
+    () => {
+      try { return sessionStorage.getItem('wealth-os-session-token') ? 'checking' : 'signedOut'; }
+      catch { return 'signedOut'; }
+    },
+  );
+  const [accessError, setAccessError] = useState('');
+  const [cloudLoaded, setCloudLoaded] = useState(false);
+  const skipFirstCloudSave = useRef(true);
+
+  async function hydrateCloudPortfolio(token: string) {
+    setAccessError('');
+    try {
+      const response = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+      const result: unknown = await response.json().catch(() => null);
+      if (response.status === 401) throw new Error('Your session expired. Please sign in again.');
+      if (!response.ok) {
+        const detail = typeof result === 'object' && result !== null && 'detail' in result
+          ? String(result.detail) : `Portfolio API returned HTTP ${response.status}.`;
+        throw new Error(detail);
+      }
+      if (!isRecord(result)) throw new Error('The portfolio API returned an invalid response.');
+      if (result.exists === true && isRecord(result.portfolio)) {
+        const portfolio = result.portfolio;
+        if (Array.isArray(portfolio.assets)) {
+          setInitialAssets(portfolio.assets.filter((item): item is Asset =>
+            isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string' &&
+            typeof item.ticker === 'string' && typeof item.category === 'string' &&
+            validNumber(item.openingValue) && validNumber(item.quantity) &&
+            validNumber(item.currentPrice) && validNumber(item.averageCost),
+          ));
+        }
+        if (Array.isArray(portfolio.transactions)) {
+          setTransactions(portfolio.transactions.filter(isStoredTransaction).map((item) => ({
+            id: item.id, date: item.date, type: item.type, ticker: item.ticker.toUpperCase(),
+            amount: item.amount, quantity: item.quantity, price: item.price, fee: item.fee,
+            notes: item.notes, realizedGain: validNumber(item.realizedGain) ? item.realizedGain : 0,
+          })));
+        }
+        if (validNumber(portfolio.openingCash) && portfolio.openingCash >= 0) setOpeningCash(portfolio.openingCash);
+        if (typeof portfolio.openingDate === 'string') setOpeningDate(portfolio.openingDate);
+      } else {
+        // First sign-in: migrate this browser's existing portfolio to the shared cloud account.
+        const localPortfolio = {
+          assets: initialAssets,
+          transactions,
+          openingCash,
+          openingDate,
+        };
+        const saveResponse = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(localPortfolio),
+        });
+        if (!saveResponse.ok) {
+          const payload: unknown = await saveResponse.json().catch(() => null);
+          const detail = isRecord(payload) && 'detail' in payload ? String(payload.detail) : 'Could not migrate this browser portfolio.';
+          throw new Error(detail);
+        }
+      }
+      setAccessToken(token);
+      setAccessStatus('signedIn');
+      setCloudLoaded(true);
+    } catch (cause) {
+      setAccessStatus('signedOut');
+      setCloudLoaded(false);
+      try { sessionStorage.removeItem('wealth-os-session-token'); } catch { /* Ignore unavailable storage. */ }
+      setAccessToken('');
+      setAccessError(cause instanceof Error ? cause.message : 'Could not connect to cloud portfolio storage.');
+    }
+  }
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAccessError('');
+    setAccessStatus('checking');
+    try {
+      const response = await fetch(`${PORTFOLIO_API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ password: accessPassword }),
+      });
+      const result: unknown = await response.json().catch(() => null);
+      if (!response.ok || !isRecord(result) || typeof result.token !== 'string') {
+        const detail = isRecord(result) && 'detail' in result ? String(result.detail) : 'Sign-in failed.';
+        throw new Error(detail);
+      }
+      try { sessionStorage.setItem('wealth-os-session-token', result.token); } catch { /* Session can remain in memory. */ }
+      setAccessPassword('');
+      await hydrateCloudPortfolio(result.token);
+    } catch (cause) {
+      setAccessStatus('signedOut');
+      setAccessError(cause instanceof Error ? cause.message : 'Sign-in failed.');
+    }
+  }
+
+  function signOut() {
+    try { sessionStorage.removeItem('wealth-os-session-token'); } catch { /* Ignore unavailable storage. */ }
+    setAccessToken('');
+    setAccessStatus('signedOut');
+    setCloudLoaded(false);
+    setAccessError('');
+  }
+
+  useEffect(() => {
+    if (accessToken && accessStatus === 'checking') void hydrateCloudPortfolio(accessToken);
+    // Validate a session token once on page load; sign-in calls hydration directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const ledger = useMemo(
     () => calculateLedger(initialAssets, transactions, openingCash),
     [initialAssets, transactions, openingCash]
@@ -535,6 +656,73 @@ function App() {
       setNotice('Warning: your browser could not save the performance start date.');
     }
   }, [openingDate]);
+
+  useEffect(() => {
+    if (!cloudLoaded || !accessToken) return;
+    if (skipFirstCloudSave.current) {
+      skipFirstCloudSave.current = false;
+      return;
+    }
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`${PORTFOLIO_API_URL}/api/portfolio`, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({ assets: initialAssets, transactions, openingCash, openingDate }),
+        });
+        if (response.status === 401) {
+          signOut();
+          setAccessError('Your session expired. Please sign in again.');
+          return;
+        }
+        if (!response.ok) {
+          const payload: unknown = await response.json().catch(() => null);
+          const detail = isRecord(payload) && 'detail' in payload ? String(payload.detail) : `Cloud save failed (HTTP ${response.status}).`;
+          setNotice(detail);
+        }
+      } catch {
+        setNotice('Cloud save failed. Check your connection; local browser data is still available.');
+      }
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [cloudLoaded, accessToken, initialAssets, transactions, openingCash, openingDate]);
+
+  if (accessStatus !== 'signedIn' || !cloudLoaded) {
+    return (
+      <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--background, #0b1020)' }}>
+        <section className="panel" style={{ width: '100%', maxWidth: 440, padding: 28 }}>
+          <h1 style={{ marginTop: 0 }}>Wealth OS</h1>
+          <p style={{ color: 'var(--muted)', lineHeight: 1.7 }}>
+            Sign in to securely access your shared portfolio. Your holdings and transactions are stored in the cloud and synchronized across browsers.
+          </p>
+          {accessStatus === 'checking' ? (
+            <p role="status">Connecting to your cloud portfolio…</p>
+          ) : (
+            <form onSubmit={signIn} style={{ display: 'grid', gap: 14 }}>
+              <label htmlFor="wealth-os-password">Portfolio password</label>
+              <input
+                id="wealth-os-password"
+                type="password"
+                autoComplete="current-password"
+                value={accessPassword}
+                onChange={(event) => setAccessPassword(event.target.value)}
+                required
+                minLength={12}
+                placeholder="Enter your shared password"
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+              <button className="primary-button" type="submit">Sign in</button>
+            </form>
+          )}
+          {accessError && <p role="alert" style={{ color: '#e77969', whiteSpace: 'pre-wrap' }}>{accessError}</p>}
+        </section>
+      </main>
+    );
+  }
 
   function openAddAsset() {
     setEditingAssetId(null);
@@ -1624,14 +1812,32 @@ function App() {
         {page === 'Market Data' && (
           <MarketDataImport
             assets={initialAssets}
-            onPricesImported={(symbol, latestPrice, quoteCurrency) => {
-              if (quoteCurrency.toUpperCase() !== 'EUR') return;
+            onPricesImported={async (symbol, latestPrice, quoteCurrency) => {
+              const currency = quoteCurrency.toUpperCase();
+              let eurPrice = latestPrice;
+              if (currency !== 'EUR') {
+                try {
+                  const fxSymbol = `EUR${currency}=X`;
+                  const fxResponse = await fetch(`${PORTFOLIO_API_URL}/api/history?symbol=${encodeURIComponent(fxSymbol)}&period=5d`);
+                  const fxPayload: unknown = await fxResponse.json();
+                  if (fxResponse.ok && isRecord(fxPayload) && Array.isArray(fxPayload.prices)) {
+                    const latestFx = (fxPayload.prices as Array<Record<string, unknown>>)
+                      .filter((item) => typeof item.close === 'number' && item.close > 0)
+                      .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+                    if (latestFx && typeof latestFx.close === 'number') eurPrice = latestPrice / latestFx.close;
+                    else throw new Error('No FX rate');
+                  } else {
+                    throw new Error('No FX rate');
+                  }
+                } catch {
+                  setNotice(`Could not convert ${currency} to EUR for ${symbol}; market price was not updated.`);
+                  return;
+                }
+              }
               const baseTicker = symbol.toUpperCase().split(/[.-]/)[0];
               setInitialAssets((current) => current.map((asset) => {
-                if (asset.ticker.toUpperCase() !== baseTicker && asset.ticker.toUpperCase() !== symbol.toUpperCase()) {
-                  return asset;
-                }
-                return { ...asset, currentPrice: latestPrice, openingPrice: asset.openingPrice && asset.openingPrice > 0 ? asset.openingPrice : latestPrice };
+                if (asset.ticker.toUpperCase() !== baseTicker && asset.ticker.toUpperCase() !== symbol.toUpperCase()) return asset;
+                return { ...asset, currentPrice: eurPrice, openingPrice: asset.openingPrice && asset.openingPrice > 0 ? asset.openingPrice : eurPrice };
               }));
             }}
           />
