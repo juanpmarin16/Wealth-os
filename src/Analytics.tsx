@@ -292,7 +292,7 @@ export default function Analytics({
     return () => {
       cancelled = true;
     };
-
+  }, [assets]);
 
   const validTransactions = useMemo(
     () =>
