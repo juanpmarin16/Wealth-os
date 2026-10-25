@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import Analytics from './Analytics';
 import MarketDataImport from './MarketDataImport';
+import MonteCarloSimulator from './MonteCarloSimulator';
 import './App.css';
 
 type Asset = {
@@ -1983,20 +1984,15 @@ function App() {
         )}
 
         {page === 'Simulator' && (
-          <section className="panel placeholder-panel">
-            <div className="placeholder-icon">⌁</div>
-            <h2>Wealth Simulator</h2>
-            <p>
-              Contribution forecasts and scenario analysis will be added in a
-              future release.
-            </p>
-            <button
-              className="secondary-button"
-              onClick={() => setPage('Dashboard')}
-            >
-              ← Back to Dashboard
-            </button>
-          </section>
+          <MonteCarloSimulator
+            initialPortfolioValue={totalNetWorth}
+            portfolioAssets={initialAssets.map((asset) => ({
+              name: asset.name,
+              ticker: asset.ticker,
+              category: asset.category,
+              value: asset.openingValue + asset.quantity * asset.currentPrice,
+            }))}
+          />
         )}
 
         {showAssetForm && (
