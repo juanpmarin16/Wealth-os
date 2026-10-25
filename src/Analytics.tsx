@@ -71,6 +71,11 @@ type MarketHistoryRow = {
   firstClose: number;
   lastClose: number;
   change: number | null;
+  annualizedVolatility: number | null;
+  maxDrawdown: number | null;
+  historicalVar95: number | null;
+  sharpeRatio: number | null;
+  sortinoRatio: number | null;
 };
 
 type AnalyticsProps = {
@@ -258,6 +263,30 @@ export default function Analytics({
           const first = prices[0];
           const last = prices[prices.length - 1];
 
+          const closes = prices
+            .map((price) => price.adjustedClose ?? price.close)
+            .filter((value) => Number.isFinite(value) && value > 0);
+          const returns = closes.slice(1).map((value, index) => value / closes[index] - 1)
+            .filter((value) => Number.isFinite(value));
+          const meanReturn = returns.length
+            ? returns.reduce((sum, value) => sum + value, 0) / returns.length
+            : 0;
+          const variance = returns.length > 1
+            ? returns.reduce((sum, value) => sum + Math.pow(value - meanReturn, 2), 0) / (returns.length - 1)
+            : 0;
+          const downside = returns.filter((value) => value < 0);
+          const downsideDeviation = downside.length
+            ? Math.sqrt(downside.reduce((sum, value) => sum + value * value, 0) / returns.length)
+            : 0;
+          const sortedReturns = [...returns].sort((a, b) => a - b);
+          const varIndex = Math.max(0, Math.ceil(sortedReturns.length * 0.05) - 1);
+          let runningPeak = closes[0] ?? 0;
+          let maxDrawdown = 0;
+          for (const close of closes) {
+            runningPeak = Math.max(runningPeak, close);
+            if (runningPeak > 0) maxDrawdown = Math.min(maxDrawdown, close / runningPeak - 1);
+          }
+
           rows.push({
             ticker: asset.ticker,
             name: asset.name,
@@ -272,6 +301,11 @@ export default function Analytics({
               (first.adjustedClose ?? first.close) > 0
                 ? ((last.adjustedClose ?? last.close) / (first.adjustedClose ?? first.close)) - 1
                 : null,
+            annualizedVolatility: returns.length > 1 ? Math.sqrt(variance) * Math.sqrt(252) : null,
+            maxDrawdown: returns.length > 1 ? maxDrawdown : null,
+            historicalVar95: sortedReturns.length > 1 ? Math.max(0, -sortedReturns[varIndex]) : null,
+            sharpeRatio: variance > 0 && returns.length > 1 ? (meanReturn * 252 - 0.02) / (Math.sqrt(variance) * Math.sqrt(252)) : null,
+            sortinoRatio: downsideDeviation > 0 && returns.length > 1 ? (meanReturn * 252 - 0.02) / (downsideDeviation * Math.sqrt(252)) : null,
           });
         }
 
@@ -436,6 +470,11 @@ export default function Analytics({
                     <th>First close</th>
                     <th>Latest close</th>
                     <th>Price change</th>
+                    <th>Volatility (ann.)</th>
+                    <th>Max drawdown</th>
+                    <th>Historical VaR 95% (daily)</th>
+                    <th>Sharpe</th>
+                    <th>Sortino</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -449,13 +488,18 @@ export default function Analytics({
                       <td>{formatMarketPrice(row.firstClose, row.currency)}</td>
                       <td>{formatMarketPrice(row.lastClose, row.currency)}</td>
                       <td>{row.change === null ? '—' : (row.change >= 0 ? '+' : '') + (row.change * 100).toFixed(2) + '%'}</td>
+                      <td>{row.annualizedVolatility === null ? '—' : (row.annualizedVolatility * 100).toFixed(2) + '%'}</td>
+                      <td>{row.maxDrawdown === null ? '—' : (row.maxDrawdown * 100).toFixed(2) + '%'}</td>
+                      <td>{row.historicalVar95 === null ? '—' : (row.historicalVar95 * 100).toFixed(2) + '%'}</td>
+                      <td>{row.sharpeRatio === null ? '—' : row.sharpeRatio.toFixed(2)}</td>
+                      <td>{row.sortinoRatio === null ? '—' : row.sortinoRatio.toFixed(2)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8, marginTop: 12 }}>
-              Price change compares the first and latest stored closing prices in the listing currency. It is not the portfolio return and does not account for trades, dividends, taxes, FX or changing holdings.
+              Risk metrics are calculated per asset from stored daily adjusted closes, using 252 trading days and a 2% annual risk-free rate. Historical VaR is the 95th-percentile one-day loss estimate. These are asset-level historical estimates, not portfolio-level forecasts; they do not include FX conversion, taxes, fees or correlations.
             </p>
           </>
         )}
