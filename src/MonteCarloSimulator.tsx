@@ -37,9 +37,10 @@ function studentRandom(df: number) {
   for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
   return randomNormal() / Math.sqrt(Math.max(chi / df, 1e-9)) * Math.sqrt((df - 2) / df);
 }
-function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, inflationVol: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage' | 'life', withdrawalPct: number, currentAge: number, sequenceStress: number, blockYears: number): PathSummary {
+function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, inflationVol: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage' | 'life', withdrawalPct: number, currentAge: number, sequenceStress: number, blockYears: number, rebalancing: 'monthly' | 'annual' | 'none'): PathSummary {
   const steps = years * 12;
   const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
+  let currentWeights = [...weights];
   const historicalRows = history.length ? history : [];
   const L = cholesky(corr.length === assets.length ? corr : assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0)));
   const monthlyAssetReturns: number[][] = [];
@@ -68,7 +69,7 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
   const cashflowEvery = 12 / frequency;
   for (let month = 0; month < steps; month++) {
     cumulativeInflation *= Math.max(.5, 1 + (inflation / 100) / 12 + (inflationVol / 100) / Math.sqrt(12) * randomNormal());
-    const r = monthlyAssetReturns[month].reduce((v, ret, i) => v + weights[i] * ret, 0);
+    const r = monthlyAssetReturns[month].reduce((v, ret, i) => v + currentWeights[i] * ret, 0);
     growthFactor *= Math.max(.05, 1 + r);
     balance = Math.max(0, balance * (1 + r));
     if ((month + 1) % cashflowEvery === 0) {
@@ -119,6 +120,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [distribution, setDistribution] = useState<Distribution>('student');
   const [df, setDf] = useState('5');
   const [sequenceStress, setSequenceStress] = useState('0');
+  const [rebalancing, setRebalancing] = useState<'monthly' | 'annual' | 'none'>('annual');
   const [blockYears, setBlockYears] = useState('1');
   const [withdrawalPct, setWithdrawalPct] = useState('4');
   const [currentAge, setCurrentAge] = useState('40');
@@ -192,7 +194,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
       const sj = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[1] - mj) ** 2, 0));
       return si > 0 && sj > 0 ? clamp(cov / (si * sj), -.95, .95) : 0;
     }));
-    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, Number(inflationVol) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, clamp(Number(currentAge) || 40, 18, 99), Number(sequenceStress) || 0, Number(blockYears) || 1)));
+    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, Number(inflationVol) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, clamp(Number(currentAge) || 40, 18, 99), Number(sequenceStress) || 0, Number(blockYears) || 1, rebalancing)));
   };
 
   const stats = useMemo(() => {
@@ -259,6 +261,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns</option><option value="parameterized">Parameterized returns</option></select></label>
           {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as Distribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
           {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" value={df} onChange={e => setDf(e.target.value)} /></label>}
+          <label>Rebalancing<select value={rebalancing} onChange={e => setRebalancing(e.target.value as 'monthly' | 'annual' | 'none')}><option value="annual">Annual</option><option value="monthly">Monthly</option><option value="none">Buy and hold (no rebalancing)</option></select></label>
           <label>Worst return years first<select value={sequenceStress} onChange={e => setSequenceStress(e.target.value)}><option value="0">Off</option>{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1} year(s)</option>)}</select></label>
           {flowType === 'percentage' && <label>Annual withdrawal (%)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>}
           {flowType === 'life' && <label>Current age<input type="number" min="18" max="99" value={currentAge} onChange={e => setCurrentAge(e.target.value)} /></label>}
