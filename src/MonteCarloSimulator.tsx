@@ -146,7 +146,20 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const duration = clamp(Math.round(Number(years)), 1, 60);
     const flowFrequency = Number(frequency);
     const amount = Number(cashflow);
-    if (model === 'historical' && history.length < 12) { setResults(null); return; }\n    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0)));
+    if (model === 'historical' && history.length < 12) { setResults(null); return; }
+    const n = normalizedAssets.length;
+    const correlationMatrix = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => {
+      if (i === j) return 1;
+      const pairs = history.map(row => [row.returns[i], row.returns[j]]).filter(pair => Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
+      if (pairs.length < 3) return 0;
+      const mi = pairs.reduce((sum, pair) => sum + pair[0], 0) / pairs.length;
+      const mj = pairs.reduce((sum, pair) => sum + pair[1], 0) / pairs.length;
+      const cov = pairs.reduce((sum, pair) => sum + (pair[0] - mi) * (pair[1] - mj), 0);
+      const si = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[0] - mi) ** 2, 0));
+      const sj = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[1] - mj) ** 2, 0));
+      return si > 0 && sj > 0 ? clamp(cov / (si * sj), -.95, .95) : 0;
+    }));
+    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0)));
   };
 
   const stats = useMemo(() => {
