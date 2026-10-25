@@ -1093,6 +1093,13 @@ function App() {
       { id: 'demo-2025-09-withdrawal', date: '2025-09-12', type: 'Withdrawal', ticker: 'EUR', amount: 1000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — partial withdrawal', realizedGain: 0 },
     ];
 
+    setInitialAssets((current) => current.map((asset) => ({
+      ...asset,
+      openingValue: 0,
+      quantity: 0,
+      openingPrice: undefined,
+      averageCost: 0,
+    })));
     setTransactions(demo);
     setOpeningCash(28000);
     setNotice('Synthetic demo transactions loaded. Every generated transaction is labelled DEMO TEST DATA; execution prices are illustrative, not historical market quotes.');
