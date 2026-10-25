@@ -569,7 +569,7 @@ function App() {
             : typeof latest.currency === 'string' ? latest.currency : 'USD';
           const currency = rawCurrency.toUpperCase();
           let eurPrice = latest.close;
-          if (currency === 'GBX' || currency === 'GBPENCE' || currency === 'GBXP') {
+          if (currency === 'GBX' || currency === 'GBPENCE' || currency === 'GBXP' || rawCurrency === 'GBp') {
             eurPrice /= 100;
             const eurGbp = await latestFxRate('EURGBP=X');
             if (!eurGbp || eurGbp <= 0) return { ticker: asset.ticker, error: 'missing EUR/GBP FX rate' } as const;
@@ -1941,8 +1941,9 @@ function App() {
             assets={initialAssets}
             onPricesImported={async (symbol, latestPrice, quoteCurrency) => {
               const currency = quoteCurrency.toUpperCase();
-              const fxCurrency = currency === 'GBX' ? 'GBP' : currency;
-              let eurPrice = currency === 'GBX' ? latestPrice / 100 : latestPrice;
+              const isPenceQuote = currency === 'GBX' || quoteCurrency === 'GBp' || currency === 'GBPENCE';
+              const fxCurrency = isPenceQuote ? 'GBP' : currency;
+              let eurPrice = isPenceQuote ? latestPrice / 100 : latestPrice;
               if (fxCurrency !== 'EUR') {
                 try {
                   const fxSymbol = `EUR${fxCurrency}=X`;
