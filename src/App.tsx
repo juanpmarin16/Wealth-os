@@ -1615,23 +1615,16 @@ function App() {
 
         {page === 'Market Data' && (
           <MarketDataImport
+            assets={initialAssets}
             onPricesImported={(symbol, latestPrice, quoteCurrency) => {
-              if (quoteCurrency.toUpperCase() !== 'EUR') {
-                setNotice(`Imported ${symbol} history. The dashboard price was not changed because the quote currency is ${quoteCurrency}, not EUR.`);
-                return;
-              }
+              if (quoteCurrency.toUpperCase() !== 'EUR') return;
               const baseTicker = symbol.toUpperCase().split(/[.-]/)[0];
-              let matched = false;
               setInitialAssets((current) => current.map((asset) => {
                 if (asset.ticker.toUpperCase() !== baseTicker && asset.ticker.toUpperCase() !== symbol.toUpperCase()) {
                   return asset;
                 }
-                matched = true;
                 return { ...asset, currentPrice: latestPrice };
               }));
-              setNotice(matched
-                ? `Updated the dashboard price for ${baseTicker} using the latest imported EUR quote.`
-                : `Imported ${symbol} history. No matching asset was found in My Portfolio, so the dashboard was not changed.`);
             }}
           />
         )}
