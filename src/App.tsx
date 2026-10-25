@@ -12,6 +12,7 @@ type Asset = {
   openingValue: number;
   quantity: number;
   currentPrice: number;
+  openingPrice?: number;
   averageCost: number;
 };
 
@@ -280,6 +281,10 @@ function readAssets(): Asset[] {
           validNumber(old.currentPrice) && old.currentPrice >= 0
             ? old.currentPrice
             : 0,
+        openingPrice:
+          validNumber(old.openingPrice) && old.openingPrice > 0
+            ? old.openingPrice
+            : undefined,
         averageCost:
           validNumber(old.averageCost) && old.averageCost >= 0
             ? old.averageCost
@@ -400,7 +405,9 @@ function App() {
     () =>
       ledger.assets.map((asset) => ({
         ...asset,
-        value: asset.openingValue + asset.quantity * asset.currentPrice,
+        value: (asset.openingValue > 0 && asset.currentPrice > 0 && asset.openingPrice && asset.openingPrice > 0
+          ? asset.openingValue * (asset.currentPrice / asset.openingPrice)
+          : asset.openingValue) + asset.quantity * asset.currentPrice,
       })),
     [ledger.assets]
   );
@@ -1624,7 +1631,7 @@ function App() {
                 if (asset.ticker.toUpperCase() !== baseTicker && asset.ticker.toUpperCase() !== symbol.toUpperCase()) {
                   return asset;
                 }
-                return { ...asset, currentPrice: latestPrice };
+                return { ...asset, currentPrice: latestPrice, openingPrice: asset.openingPrice && asset.openingPrice > 0 ? asset.openingPrice : latestPrice };
               }));
             }}
           />
