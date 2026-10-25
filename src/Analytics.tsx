@@ -858,7 +858,7 @@ export default function Analytics({
       </div>
       <section className="metrics" style={{ marginBottom: 20 }}>
         <div className="metric-card">
-          <span className="metric-label">{chartAsset === 'PORTFOLIO' ? 'PORTFOLIO PROXY SHARPE' : 'ASSET SHARPE RATIO'}</span>
+          <span className="metric-label">{chartAsset === 'PORTFOLIO' ? 'PORTFOLIO SHARPE' : 'ASSET SHARPE RATIO'}</span>
           <strong className="metric-value">{chartRisk.sharpe === null ? '—' : chartRisk.sharpe.toFixed(2)}</strong>
           <span className="metric-note">Annualized, 2% risk-free rate</span>
         </div>
