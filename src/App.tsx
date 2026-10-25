@@ -526,9 +526,9 @@ function App() {
     () =>
       ledger.assets.map((asset) => ({
         ...asset,
-        value: (asset.openingValue > 0 && asset.currentPrice > 0 && asset.openingPrice && asset.openingPrice > 0
-          ? asset.openingValue * (asset.currentPrice / asset.openingPrice)
-          : asset.openingValue) + asset.quantity * asset.currentPrice,
+        // Market value is strictly units held multiplied by the latest market price.
+        // Opening value is historical accounting data, never an extra current asset value.
+        value: Math.max(0, asset.quantity) * Math.max(0, asset.currentPrice),
       })),
     [ledger.assets]
   );
