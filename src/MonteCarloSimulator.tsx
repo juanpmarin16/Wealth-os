@@ -37,7 +37,7 @@ function pathFor(seed: number, years: number, start: number, cashflow: number, f
       const portfolioReturn = assets.reduce((sum, a, i) => sum + a.weight * periodReturns[i], 0);
       balance = Math.max(0, balance * (1 + portfolioReturn));
       if (period === frequency - 1) cumulativeInflation *= Math.max(0.5, 1 + (inflation / 100));
-      const flow = cashflow * (inflationAdjusted ? cumulativeInflation : 1) / frequency;
+      const flow = cashflow * (inflationAdjusted ? cumulativeInflation : 1);
       if (withdrawals) {
         balance = Math.max(0, balance - flow);
         if (balance <= 0) survived = false;
@@ -116,7 +116,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   };
 
   return <div className="mc-page">
-    <header className="mc-heading"><div><p className="mc-eyebrow">PLANNING & RISK</p><h2>Monte Carlo Simulator</h2><p>Explore thousands of possible portfolio outcomes instead of relying on a single forecast.</p></div><span className="mc-pill">Stochastic projection</span></header>
+    <header className="mc-heading"><div><p className="mc-eyebrow">PLANNING & RISK</p><h2>Monte Carlo Simulator</h2><p>Explore thousands of possible portfolio outcomes instead of relying on a single forecast. {portfolioAssets.length ? `Linked to your portfolio: ${portfolioAssets.length} tracked assets.` : 'No tracked assets found yet; you can still model a hypothetical allocation.'}</p></div><span className="mc-pill">Stochastic projection</span></header>
     <div className="mc-layout">
       <section className="panel mc-config">
         <div className="mc-section-title"><div><h3>Simulation settings</h3><p>All amounts are in EUR. Assumptions are editable.</p></div></div>
@@ -146,7 +146,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             <div className="panel mc-kpi"><span>Median ending balance</span><strong>{euro(quantile(stats.nominal, .5))}</strong><small>Nominal value</small></div>
             <div className="panel mc-kpi"><span>10th percentile</span><strong>{euro(quantile(stats.nominal, .1))}</strong><small>Downside outcome</small></div>
             <div className="panel mc-kpi"><span>90th percentile</span><strong>{euro(quantile(stats.nominal, .9))}</strong><small>Upside outcome</small></div>
-            <div className="panel mc-kpi"><span>Survival rate</span><strong>{pct(stats.survival)}</strong><small>Withdrawals funded throughout</small></div>
+            <div className="panel mc-kpi"><span>{flowType === 'withdrawal' ? 'Withdrawal survival' : 'Ending above zero'}</span><strong>{pct(stats.survival)}</strong><small>{flowType === 'withdrawal' ? 'Paths funding all withdrawals' : 'Paths retaining a positive balance'}</small></div>
           </div>
           <div className="panel mc-chart-panel"><div className="mc-section-title"><div><h3>Portfolio balance over time</h3><p>10th–90th percentile range and median path</p></div></div>{chart(stats.p10Path, stats.medianPath, stats.p90Path)}<div className="mc-legend"><span><i className="mc-legend-low" />10th percentile</span><span><i className="mc-legend-median" />Median</span><span><i className="mc-legend-high" />90th percentile</span></div></div>
           <div className="panel mc-table-panel"><div className="mc-section-title"><div><h3>Ending balance distribution</h3><p>Percentiles of all simulated portfolio paths</p></div></div><table className="mc-summary-table"><thead><tr><th>Metric</th><th>10th</th><th>25th</th><th>50th</th><th>75th</th><th>90th</th></tr></thead><tbody>
