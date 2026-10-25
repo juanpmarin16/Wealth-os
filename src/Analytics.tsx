@@ -11,9 +11,12 @@ import {
 } from './performance';
 
 type Transaction = {
+  id?: string;
   date: string;
   type: string;
   amount: number;
+  quantity: number;
+  price: number;
   fee: number;
   ticker: string;
 };
@@ -86,6 +89,7 @@ type AnalyticsProps = {
   assets: AnalyticsAsset[];
   currentValue: number;
   openingValue: number;
+  openingCash: number;
   openingDate: string;
   transactions: Transaction[];
 };
@@ -130,6 +134,35 @@ function formatMarketPrice(value: number, currency: string): string {
       maximumFractionDigits: 4,
     }).format(value) + ' ' + currency;
   }
+}
+
+
+async function fetchFxHistory(currency: string): Promise<PricePoint[]> {
+  const symbol = `EUR${currency}=X`;
+  const response = await fetch(
+    new URL('/api/history?symbol=' + encodeURIComponent(symbol) + '&period=max', MARKET_DATA_API_URL).toString(),
+    { headers: { Accept: 'application/json' } },
+  );
+  if (!response.ok) throw new Error(`Historical FX data unavailable for ${currency} (HTTP ${response.status}).`);
+  const payload: unknown = await response.json();
+  if (typeof payload !== 'object' || payload === null || !('prices' in payload) || !Array.isArray(payload.prices)) {
+    throw new Error(`Unexpected historical FX response for ${currency}.`);
+  }
+  return (payload.prices as Array<{ date?: unknown; close?: unknown }>)
+    .filter((point): point is { date: string; close: number } =>
+      typeof point.date === 'string' && typeof point.close === 'number' && Number.isFinite(point.close) && point.close > 0,
+    )
+    .map((point) => ({ date: point.date, value: point.close }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function lastPriceOnOrBefore(points: PricePoint[], date: string): PricePoint | undefined {
+  let result: PricePoint | undefined;
+  for (const point of points) {
+    if (point.date > date) break;
+    result = point;
+  }
+  return result;
 }
 
 function externalFlowsFromTransactions(
@@ -209,6 +242,7 @@ export default function Analytics({
   assets,
   currentValue,
   openingValue,
+  openingCash,
   openingDate,
   transactions,
 }: AnalyticsProps) {
@@ -230,6 +264,8 @@ export default function Analytics({
       try {
         const rows: MarketHistoryRow[] = [];
         const series: Record<string, PricePoint[]> = {};
+        const fxCache: Record<string, PricePoint[]> = {};
+        const fxWarnings: string[] = [];
 
         for (const asset of assets) {
           const symbol = yahooSymbolFor(asset.ticker);
@@ -317,15 +353,39 @@ export default function Analytics({
 
           if (!listing || prices.length === 0) continue;
 
-          series[asset.ticker] = prices
-            .map((price) => ({ date: price.date, value: price.adjustedClose ?? price.close }))
-            .filter((point) => Number.isFinite(point.value) && point.value > 0)
-            .sort((a, b) => a.date.localeCompare(b.date));
+          const orderedPrices = [...prices].sort((left, right) => left.date.localeCompare(right.date));
+          const first = orderedPrices[0];
+          const last = orderedPrices[orderedPrices.length - 1];
+          const rawCurrency = String(last.currency || listing.quoteCurrency || 'USD');
+          const upperCurrency = rawCurrency.toUpperCase();
+          const isPenceQuote = rawCurrency === 'GBp' || upperCurrency === 'GBX' || upperCurrency === 'GBPENCE';
+          const quoteCurrency = isPenceQuote ? 'GBP' : upperCurrency;
+          let fxPoints: PricePoint[] = [];
 
-          const first = prices[0];
-          const last = prices[prices.length - 1];
+          if (quoteCurrency !== 'EUR') {
+            try {
+              fxPoints = fxCache[quoteCurrency] ?? await fetchFxHistory(quoteCurrency);
+              fxCache[quoteCurrency] = fxPoints;
+            } catch (cause) {
+              fxWarnings.push(cause instanceof Error ? cause.message : `Historical FX data unavailable for ${quoteCurrency}.`);
+            }
+          }
 
-          const closes = prices
+          const converted = orderedPrices.flatMap((price) => {
+            const rawPrice = price.adjustedClose ?? price.close;
+            if (!Number.isFinite(rawPrice) || rawPrice <= 0) return [];
+            const quoteValue = isPenceQuote ? rawPrice / 100 : rawPrice;
+            if (quoteCurrency === 'EUR') return [{ date: price.date, value: quoteValue }];
+            const fx = lastPriceOnOrBefore(fxPoints, price.date);
+            if (!fx || fx.value <= 0) return [];
+            const ageDays = (new Date(`${price.date}T00:00:00Z`).getTime() - new Date(`${fx.date}T00:00:00Z`).getTime()) / 86400000;
+            if (ageDays > 7) return [];
+            return [{ date: price.date, value: quoteValue / fx.value }];
+          });
+
+          if (converted.length > 0) series[asset.ticker] = converted;
+
+          const closes = orderedPrices
             .map((price) => price.adjustedClose ?? price.close)
             .filter((value) => Number.isFinite(value) && value > 0);
           const returns = closes.slice(1).map((value, index) => value / closes[index] - 1)
@@ -354,7 +414,7 @@ export default function Analytics({
             name: asset.name,
             symbol: listing.symbol,
             currency: last.currency,
-            records: prices.length,
+            records: orderedPrices.length,
             firstDate: first.date,
             lastDate: last.date,
             firstClose: first.adjustedClose ?? first.close,
@@ -374,6 +434,7 @@ export default function Analytics({
         if (!cancelled) {
           setMarketHistory(rows.sort((a, b) => a.ticker.localeCompare(b.ticker)));
           setMarketSeries(series);
+          setMarketHistoryError(fxWarnings.length ? [...new Set(fxWarnings)].join(' ') : '');
         }
       } catch (cause) {
         if (!cancelled) {
