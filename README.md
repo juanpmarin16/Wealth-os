@@ -42,3 +42,16 @@ Supported periods: `1y`, `2y`, `5y`, `10y`, `max`.
 - Failed requests do not delete previously saved prices.
 - Some tickers have limited history or may not be available through Yahoo Finance.
 - Historical data is not guaranteed to be real-time, complete, or suitable for trading. Check Yahoo Finance's terms for your intended use.
+
+
+## Durable market-data archive and mark-to-market
+
+The browser database remains the fast local cache. Market Data now also posts imported daily bars to `POST /api/saved-prices` and the API exposes `GET /api/saved-prices?symbol=VGWL.DE`. PostgreSQL upserts are keyed by symbol, date and provider, so refreshing a date corrects that record without creating duplicates. The archive is independent of browser storage and can be read from another device.
+
+**One deployment step is required before server-side durability is active:** configure a managed PostgreSQL database and set its connection string as the `DATABASE_URL` environment variable on the `wealth-os-market-data` Render service. The API health response reports `durableStorage: configured` only when this variable exists. Without it, browser imports still work locally, but the API reports that durable storage is not configured; do not treat IndexedDB as a permanent backup.
+
+After setting `DATABASE_URL`, redeploy the Render service and open `/health`. Confirm that `durableStorage` is `configured`, then run **Pull Market Data**. Historical prices are retained in PostgreSQL and overlapping dates are updated idempotently.
+
+### Mark-to-market methodology
+
+Imported EUR-quoted prices update the asset's latest price. For legacy opening balances that have a saved opening-price baseline, market value is adjusted proportionally to the latest price; tracked units are valued as quantity × latest price. The first import establishes the opening-price baseline, so it preserves the legacy opening value on that first sync and subsequent price changes move the valuation. Assets quoted in non-EUR currencies are not yet converted into the portfolio base currency and are deliberately not marked to market by the current callback. Cross-currency FX conversion and exact daily portfolio valuation snapshots remain follow-up work before treating performance, volatility, drawdown, Sharpe/Sortino, VaR or beta as production-grade.
