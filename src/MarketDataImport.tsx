@@ -32,7 +32,7 @@ type YahooHistoryResponse = {
 
 type MarketDataImportProps = {
   assets: PortfolioAsset[];
-  onPricesImported?: (symbol: string, latestPrice: number, currency: string) => void;
+  onPricesImported?: (symbol: string, latestPrice: number, currency: string) => void | Promise<void>;
 };
 
 const SYMBOLS: Record<string, string> = {
@@ -275,7 +275,7 @@ export default function MarketDataImport({
           const latest = data.prices.reduce((a, b) =>
             a.date > b.date ? a : b,
           );
-          onPricesImported?.(symbol, latest.close, data.currency || "USD");
+          await onPricesImported?.(symbol, latest.close, data.currency || "USD");
         } catch (cause) {
           failures.push(
             `${asset.ticker} (${symbol}): ${cause instanceof Error ? cause.message : "Unknown error"}`,
@@ -330,7 +330,7 @@ export default function MarketDataImport({
       <section className="panel" style={{ padding: 22 }}>
         <h2 style={{ marginTop: 0 }}>Market Data</h2>
         <p style={{ color: "var(--muted)", lineHeight: 1.7 }}>
-          Pull daily market data for your portfolio. Each asset is first backfilled with all history available from Yahoo Finance, including any existing partial history; later pulls fetch only data from the latest saved date, refreshing overlapping records. Prices are saved in this browser and also uploaded to the durable market-data database when DATABASE_URL is configured on the API. Local records are preserved if a download fails.
+          Pull daily market data for your portfolio. Each asset is first backfilled with all history available from Yahoo Finance, including any existing partial history; later pulls fetch only data from the latest saved date, refreshing overlapping records. Daily price history is archived in PostgreSQL and cached locally for fast access. Your portfolio itself is synchronized to the protected cloud account after sign-in.
         </p>
 
         <button
