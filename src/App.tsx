@@ -517,6 +517,98 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const [marketPriceStatus, setMarketPriceStatus] = useState('Loading saved market prices…');
+
+  useEffect(() => {
+    if (!cloudLoaded || accessStatus !== 'signedIn') return;
+    let cancelled = false;
+    const symbols: Record<string, string> = {
+      VGWL: 'VGWL.DE',
+      EQQQ: 'EQQQ.DE',
+      BTC: 'BTC-USD',
+      LDGL: 'LDGL.L',
+    };
+
+    async function latestFxRate(symbol: string): Promise<number | null> {
+      try {
+        const response = await fetch(
+          new URL('/api/history?symbol=' + encodeURIComponent(symbol) + '&period=1y', PORTFOLIO_API_URL).toString(),
+          { headers: { Accept: 'application/json' } },
+        );
+        const payload: unknown = await response.json();
+        if (!response.ok || !isRecord(payload) || !Array.isArray(payload.prices)) return null;
+        const rates = payload.prices.filter((row): row is Record<string, unknown> =>
+          isRecord(row) && validNumber(row.close) && row.close > 0
+        ).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+        return rates.length ? rates[0].close as number : null;
+      } catch {
+        return null;
+      }
+    }
+
+    async function hydrateLatestPrices() {
+      const results = await Promise.all(initialAssets.map(async (asset) => {
+        const symbol = symbols[asset.ticker.toUpperCase()];
+        if (!symbol) return null;
+        try {
+          const response = await fetch(
+            new URL('/api/saved-prices?symbol=' + encodeURIComponent(symbol), PORTFOLIO_API_URL).toString(),
+            { headers: { Accept: 'application/json' } },
+          );
+          if (!response.ok) return null;
+          const payload: unknown = await response.json();
+          if (!isRecord(payload) || !Array.isArray(payload.prices)) return null;
+          const valid = payload.prices.filter((row): row is Record<string, unknown> =>
+            isRecord(row) && typeof row.date === 'string' && validNumber(row.close) && row.close > 0
+          ).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+          const latest = valid[valid.length - 1];
+          if (!latest || !validNumber(latest.close)) return null;
+
+          const rawCurrency = typeof payload.currency === 'string'
+            ? payload.currency
+            : typeof latest.currency === 'string' ? latest.currency : 'USD';
+          const currency = rawCurrency.toUpperCase();
+          let eurPrice = latest.close;
+          if (currency === 'GBX' || currency === 'GBPENCE' || currency === 'GBXP' || rawCurrency === 'GBp') {
+            eurPrice /= 100;
+            const eurGbp = await latestFxRate('EURGBP=X');
+            if (!eurGbp || eurGbp <= 0) return { ticker: asset.ticker, error: 'missing EUR/GBP FX rate' } as const;
+            eurPrice /= eurGbp;
+          } else if (currency !== 'EUR') {
+            const eurCurrency = await latestFxRate('EUR' + currency + '=X');
+            if (!eurCurrency || eurCurrency <= 0) return { ticker: asset.ticker, error: 'missing EUR/' + currency + ' FX rate' } as const;
+            eurPrice /= eurCurrency;
+          }
+          return { ticker: asset.ticker.toUpperCase(), price: eurPrice, date: String(latest.date) };
+        } catch {
+          return null;
+        }
+      }));
+
+      if (cancelled) return;
+      const quotes = results.filter((item): item is { ticker: string; price: number; date: string } =>
+        item !== null && 'price' in item
+      );
+      const errors = results.filter((item): item is { ticker: string; error: string } =>
+        item !== null && 'error' in item
+      );
+      if (quotes.length) {
+        setInitialAssets((current) => current.map((asset) => {
+          const quote = quotes.find((item) => item.ticker === asset.ticker.toUpperCase());
+          return quote ? { ...asset, currentPrice: quote.price } : asset;
+        }));
+        setMarketPriceStatus('Latest saved prices converted to EUR: ' + quotes.map((quote) => quote.ticker + ' (' + quote.date + ')').join(', ') +
+          (errors.length ? '. Not updated: ' + errors.map((item) => item.ticker + ' — ' + item.error).join(', ') : ''));
+      } else {
+        setMarketPriceStatus('No usable saved prices found for current holdings. Import the corresponding symbols in Market Data.' +
+          (errors.length ? ' FX issue: ' + errors.map((item) => item.ticker + ' — ' + item.error).join(', ') : ''));
+      }
+    }
+
+    void hydrateLatestPrices();
+    return () => { cancelled = true; };
+  }, [cloudLoaded, accessStatus]);
+
   const ledger = useMemo(
     () => calculateLedger(initialAssets, transactions, openingCash),
     [initialAssets, transactions, openingCash]
@@ -526,9 +618,9 @@ function App() {
     () =>
       ledger.assets.map((asset) => ({
         ...asset,
-        value: (asset.openingValue > 0 && asset.currentPrice > 0 && asset.openingPrice && asset.openingPrice > 0
-          ? asset.openingValue * (asset.currentPrice / asset.openingPrice)
-          : asset.openingValue) + asset.quantity * asset.currentPrice,
+        // Market value is strictly units held multiplied by the latest market price.
+        // Historical opening value is not an additional current asset balance.
+        value: Math.max(0, asset.quantity) * Math.max(0, asset.currentPrice),
       })),
     [ledger.assets]
   );
@@ -1025,6 +1117,33 @@ function App() {
     );
   }
 
+  function generateDemoTransactions() {
+    if (transactions.length > 0 && !window.confirm('Replace the current transaction history with clearly labelled synthetic test transactions?')) return;
+
+    const demo: Transaction[] = [
+      { id: 'demo-2024-01-deposit', date: '2024-01-05', type: 'Deposit', ticker: 'EUR', amount: 12000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — initial contribution', realizedGain: 0 },
+      { id: 'demo-2024-01-vgwl', date: '2024-01-08', type: 'Buy', ticker: 'VGWL', amount: 8000, quantity: 80, price: 100, fee: 2, notes: 'DEMO TEST DATA — VGWL purchase', realizedGain: 0 },
+      { id: 'demo-2024-02-eqqq', date: '2024-02-12', type: 'Buy', ticker: 'EQQQ', amount: 5000, quantity: 25, price: 200, fee: 2, notes: 'DEMO TEST DATA — EQQQ purchase', realizedGain: 0 },
+      { id: 'demo-2024-03-btc', date: '2024-03-18', type: 'Buy', ticker: 'BTC', amount: 4000, quantity: 0.08, price: 50000, fee: 1, notes: 'DEMO TEST DATA — Bitcoin purchase; synthetic execution price', realizedGain: 0 },
+      { id: 'demo-2024-04-deposit', date: '2024-04-02', type: 'Deposit', ticker: 'EUR', amount: 8000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — additional contribution', realizedGain: 0 },
+      { id: 'demo-2024-04-ldgl', date: '2024-04-08', type: 'Buy', ticker: 'LDGL', amount: 3000, quantity: 150, price: 20, fee: 1, notes: 'DEMO TEST DATA — LDGL purchase', realizedGain: 0 },
+      { id: 'demo-2024-06-dividend', date: '2024-06-28', type: 'Dividend', ticker: 'VGWL', amount: 95, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — dividend received', realizedGain: 0 },
+      { id: 'demo-2024-08-sell', date: '2024-08-15', type: 'Sell', ticker: 'EQQQ', amount: 1200, quantity: 5, price: 240, fee: 2, notes: 'DEMO TEST DATA — partial EQQQ sale', realizedGain: 198 },
+      { id: 'demo-2025-01-deposit', date: '2025-01-10', type: 'Deposit', ticker: 'EUR', amount: 5000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — annual contribution', realizedGain: 0 },
+      { id: 'demo-2025-02-vgwl', date: '2025-02-14', type: 'Buy', ticker: 'VGWL', amount: 2500, quantity: 20, price: 125, fee: 1, notes: 'DEMO TEST DATA — additional VGWL purchase', realizedGain: 0 },
+      { id: 'demo-2025-06-dividend', date: '2025-06-30', type: 'Dividend', ticker: 'LDGL', amount: 62, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — dividend received', realizedGain: 0 },
+      { id: 'demo-2025-09-withdrawal', date: '2025-09-12', type: 'Withdrawal', ticker: 'EUR', amount: 1000, quantity: 0, price: 0, fee: 0, notes: 'DEMO TEST DATA — partial withdrawal', realizedGain: 0 },
+    ];
+
+    setInitialAssets((current) => current.map((asset) => ({
+      ...asset, openingValue: 0, quantity: 0, openingPrice: undefined, averageCost: 0,
+    })));
+    setTransactions(demo);
+    setOpeningCash(28000);
+    setOpeningDate('2024-01-05');
+    setNotice('Synthetic demo transactions loaded. All generated transactions are labelled DEMO TEST DATA; execution prices are illustrative, not historical market quotes.');
+  }
+
   function resetDemo() {
     if (
       !window.confirm(
@@ -1166,6 +1285,10 @@ function App() {
           </div>
         )}
 
+        <p role="status" style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>
+          Market pricing: {marketPriceStatus}
+        </p>
+
         {page === 'Dashboard' && (
           <>
             <section className="welcome-row">
@@ -1182,6 +1305,9 @@ function App() {
                 onClick={openAddTransaction}
               >
                 + Add transaction
+              </button>
+              <button className="text-button" onClick={generateDemoTransactions}>
+                Generate demo transactions
               </button>
             </section>
 
@@ -1815,18 +1941,19 @@ function App() {
             assets={initialAssets}
             onPricesImported={async (symbol, latestPrice, quoteCurrency) => {
               const currency = quoteCurrency.toUpperCase();
-              const fxCurrency = currency === 'GBX' ? 'GBP' : currency;
-              let eurPrice = currency === 'GBX' ? latestPrice / 100 : latestPrice;
+              const isPenceQuote = currency === 'GBX' || quoteCurrency === 'GBp' || currency === 'GBPENCE';
+              const fxCurrency = isPenceQuote ? 'GBP' : currency;
+              let eurPrice = isPenceQuote ? latestPrice / 100 : latestPrice;
               if (fxCurrency !== 'EUR') {
                 try {
                   const fxSymbol = `EUR${fxCurrency}=X`;
-                  const fxResponse = await fetch(`${PORTFOLIO_API_URL}/api/history?symbol=${encodeURIComponent(fxSymbol)}&period=5d`);
+                  const fxResponse = await fetch(`${PORTFOLIO_API_URL}/api/history?symbol=${encodeURIComponent(fxSymbol)}&period=1y`);
                   const fxPayload: unknown = await fxResponse.json();
                   if (fxResponse.ok && isRecord(fxPayload) && Array.isArray(fxPayload.prices)) {
                     const latestFx = (fxPayload.prices as Array<Record<string, unknown>>)
                       .filter((item) => typeof item.close === 'number' && item.close > 0)
                       .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
-                    if (latestFx && typeof latestFx.close === 'number') eurPrice = latestPrice / latestFx.close;
+                    if (latestFx && typeof latestFx.close === 'number') eurPrice = eurPrice / latestFx.close;
                     else throw new Error('No FX rate');
                   } else {
                     throw new Error('No FX rate');

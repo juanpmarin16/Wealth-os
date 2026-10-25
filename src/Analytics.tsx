@@ -60,6 +60,10 @@ function yahooSymbolFor(ticker: string): string | undefined {
   return YAHOO_SYMBOLS[normalized] ?? normalized;
 }
 
+type PricePoint = { date: string; value: number };
+
+type ChartPoint = { date: string; value: number };
+
 type MarketHistoryRow = {
   ticker: string;
   name: string;
@@ -71,6 +75,11 @@ type MarketHistoryRow = {
   firstClose: number;
   lastClose: number;
   change: number | null;
+  annualizedVolatility: number | null;
+  maxDrawdown: number | null;
+  historicalVar95: number | null;
+  sharpeRatio: number | null;
+  sortinoRatio: number | null;
 };
 
 type AnalyticsProps = {
@@ -147,6 +156,55 @@ function externalFlowsFromTransactions(
     }));
 }
 
+
+function PerformanceChart({ title, points }: { title: string; points: ChartPoint[] }) {
+  const width = 900;
+  const height = 300;
+  const padding = { top: 18, right: 24, bottom: 38, left: 56 };
+  const values = points.map((point) => point.value);
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(0, ...values);
+  const spread = maxValue - minValue || 1;
+  const x = (index: number) => padding.left + (index / Math.max(1, points.length - 1)) * (width - padding.left - padding.right);
+  const y = (value: number) => padding.top + ((maxValue - value) / spread) * (height - padding.top - padding.bottom);
+  const polyline = points.map((point, index) => `${x(index)},${y(point.value)}`).join(' ');
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => maxValue - spread * fraction);
+  return (
+    <section className="panel" style={{ padding: 20, marginBottom: 20 }}>
+      <div className="panel-heading">
+        <div>
+          <h3>{title}</h3>
+          <p>Indexed performance (start = 0%); based on stored daily adjusted closing prices</p>
+        </div>
+      </div>
+      {points.length < 2 ? (
+        <p style={{ color: 'var(--muted)' }}>Not enough historical prices to draw this chart.</p>
+      ) : (
+        <div style={{ width: '100%', overflowX: 'auto' }}>
+          <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title} style={{ width: '100%', minWidth: 520, display: 'block' }}>
+            {ticks.map((tick) => (
+              <g key={tick}>
+                <line x1={padding.left} x2={width - padding.right} y1={y(tick)} y2={y(tick)} stroke="var(--border, #394150)" strokeDasharray="4 5" />
+                <text x={padding.left - 10} y={y(tick) + 4} textAnchor="end" fontSize="11" fill="var(--muted, #9ca3af)">{tick.toFixed(0)}%</text>
+              </g>
+            ))}
+            <line x1={padding.left} x2={width - padding.right} y1={y(0)} y2={y(0)} stroke="var(--muted, #9ca3af)" strokeWidth="1" />
+            <polyline points={polyline} fill="none" stroke="var(--accent, #7c9cff)" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+            <text x={padding.left} y={height - 10} fontSize="11" fill="var(--muted, #9ca3af)">{points[0].date}</text>
+            <text x={width - padding.right} y={height - 10} textAnchor="end" fontSize="11" fill="var(--muted, #9ca3af)">{points[points.length - 1].date}</text>
+          </svg>
+        </div>
+      )}
+      {points.length > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginTop: 8 }}>
+          <span style={{ color: 'var(--muted)', fontSize: 12 }}>Period return: <strong>{percentage(points[points.length - 1].value / 100)}</strong></span>
+          <span style={{ color: 'var(--muted)', fontSize: 12 }}>Observations: {points.length.toLocaleString('en-GB')}</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Analytics({
   assets,
   currentValue,
@@ -156,6 +214,9 @@ export default function Analytics({
 }: AnalyticsProps) {
   const asOfDate = today();
   const [marketHistory, setMarketHistory] = useState<MarketHistoryRow[]>([]);
+  const [marketSeries, setMarketSeries] = useState<Record<string, PricePoint[]>>({});
+  const [chartAsset, setChartAsset] = useState('PORTFOLIO');
+  const [chartRange, setChartRange] = useState('MAX');
   const [marketHistoryLoading, setMarketHistoryLoading] = useState(false);
   const [marketHistoryError, setMarketHistoryError] = useState('');
 
@@ -168,6 +229,7 @@ export default function Analytics({
 
       try {
         const rows: MarketHistoryRow[] = [];
+        const series: Record<string, PricePoint[]> = {};
 
         for (const asset of assets) {
           const symbol = yahooSymbolFor(asset.ticker);
@@ -255,8 +317,37 @@ export default function Analytics({
 
           if (!listing || prices.length === 0) continue;
 
+          series[asset.ticker] = prices
+            .map((price) => ({ date: price.date, value: price.adjustedClose ?? price.close }))
+            .filter((point) => Number.isFinite(point.value) && point.value > 0)
+            .sort((a, b) => a.date.localeCompare(b.date));
+
           const first = prices[0];
           const last = prices[prices.length - 1];
+
+          const closes = prices
+            .map((price) => price.adjustedClose ?? price.close)
+            .filter((value) => Number.isFinite(value) && value > 0);
+          const returns = closes.slice(1).map((value, index) => value / closes[index] - 1)
+            .filter((value) => Number.isFinite(value));
+          const meanReturn = returns.length
+            ? returns.reduce((sum, value) => sum + value, 0) / returns.length
+            : 0;
+          const variance = returns.length > 1
+            ? returns.reduce((sum, value) => sum + Math.pow(value - meanReturn, 2), 0) / (returns.length - 1)
+            : 0;
+          const downside = returns.filter((value) => value < 0);
+          const downsideDeviation = downside.length
+            ? Math.sqrt(downside.reduce((sum, value) => sum + value * value, 0) / returns.length)
+            : 0;
+          const sortedReturns = [...returns].sort((a, b) => a - b);
+          const varIndex = Math.max(0, Math.ceil(sortedReturns.length * 0.05) - 1);
+          let runningPeak = closes[0] ?? 0;
+          let maxDrawdown = 0;
+          for (const close of closes) {
+            runningPeak = Math.max(runningPeak, close);
+            if (runningPeak > 0) maxDrawdown = Math.min(maxDrawdown, close / runningPeak - 1);
+          }
 
           rows.push({
             ticker: asset.ticker,
@@ -272,11 +363,17 @@ export default function Analytics({
               (first.adjustedClose ?? first.close) > 0
                 ? ((last.adjustedClose ?? last.close) / (first.adjustedClose ?? first.close)) - 1
                 : null,
+            annualizedVolatility: returns.length > 1 ? Math.sqrt(variance) * Math.sqrt(252) : null,
+            maxDrawdown: returns.length > 1 ? maxDrawdown : null,
+            historicalVar95: sortedReturns.length > 1 ? Math.max(0, -sortedReturns[varIndex]) : null,
+            sharpeRatio: variance > 0 && returns.length > 1 ? (meanReturn * 252 - 0.02) / (Math.sqrt(variance) * Math.sqrt(252)) : null,
+            sortinoRatio: downsideDeviation > 0 && returns.length > 1 ? (meanReturn * 252 - 0.02) / (downsideDeviation * Math.sqrt(252)) : null,
           });
         }
 
         if (!cancelled) {
           setMarketHistory(rows.sort((a, b) => a.ticker.localeCompare(b.ticker)));
+          setMarketSeries(series);
         }
       } catch (cause) {
         if (!cancelled) {
@@ -399,6 +496,80 @@ export default function Analytics({
     externalFlows,
   ]);
 
+
+  const chartData = useMemo(() => {
+    const rangeDays = chartRange === '1Y' ? 365 : chartRange === '3Y' ? 365 * 3 : Number.POSITIVE_INFINITY;
+    const cutoff = Number.isFinite(rangeDays)
+      ? new Date(new Date(asOfDate + 'T00:00:00Z').getTime() - rangeDays * 86400000).toISOString().slice(0, 10)
+      : '';
+    const filtered = Object.fromEntries(Object.entries(marketSeries).map(([ticker, points]) => [
+      ticker,
+      points.filter((point) => !cutoff || point.date >= cutoff),
+    ])) as Record<string, PricePoint[]>;
+    const available = Object.entries(filtered).filter(([, points]) => points.length > 1);
+    if (chartAsset !== 'PORTFOLIO') {
+      const points = filtered[chartAsset] ?? [];
+      if (points.length < 2) return [];
+      const base = points[0].value;
+      return points.map((point) => ({ date: point.date, value: (point.value / base - 1) * 100 }));
+    }
+    if (!available.length) return [];
+    const totalWeight = available.reduce((sum, [ticker]) => {
+      const asset = assets.find((item) => item.ticker === ticker);
+      return sum + Math.max(0, (asset?.quantity ?? 0) * (asset?.currentPrice ?? 0));
+    }, 0);
+    const weights = available.map(([ticker]) => {
+      const asset = assets.find((item) => item.ticker === ticker);
+      const marketValue = Math.max(0, (asset?.quantity ?? 0) * (asset?.currentPrice ?? 0));
+      return [ticker, totalWeight > 0 ? marketValue / totalWeight : 1 / available.length] as const;
+    });
+    const dates = [...new Set(available.flatMap(([, points]) => points.map((point) => point.date)))].sort();
+    const lastKnown = new Map<string, PricePoint>();
+    const firstValues = new Map<string, number>();
+    const points: ChartPoint[] = [];
+    for (const date of dates) {
+      for (const [ticker, history] of available) {
+        const match = history.find((point) => point.date === date);
+        if (match) lastKnown.set(ticker, match);
+        if (!firstValues.has(ticker) && history[0]) firstValues.set(ticker, history[0].value);
+      }
+      let composite = 0;
+      let usedWeight = 0;
+      for (const [ticker, weight] of weights) {
+        const latest = lastKnown.get(ticker);
+        const base = firstValues.get(ticker);
+        if (latest && base && base > 0) {
+          composite += (latest.value / base) * weight;
+          usedWeight += weight;
+        }
+      }
+      if (usedWeight > 0) points.push({ date, value: ((composite / usedWeight) - 1) * 100 });
+    }
+    return points;
+  }, [marketSeries, chartAsset, chartRange, asOfDate, assets]);
+
+  const chartRisk = useMemo(() => {
+    const returns = chartData.slice(1).map((point, index) => {
+      const previous = chartData[index].value / 100 + 1;
+      const current = point.value / 100 + 1;
+      return previous > 0 ? current / previous - 1 : 0;
+    }).filter(Number.isFinite);
+    const mean = returns.length ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0;
+    const variance = returns.length > 1 ? returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1) : 0;
+    const sorted = [...returns].sort((a, b) => a - b);
+    const varIndex = Math.max(0, Math.ceil(sorted.length * 0.05) - 1);
+    const sd = Math.sqrt(variance);
+    const downside = returns.filter((value) => value < 0);
+    const downsideDeviation = returns.length ? Math.sqrt(downside.reduce((sum, value) => sum + value ** 2, 0) / returns.length) : 0;
+    return {
+      volatility: returns.length > 1 ? sd * Math.sqrt(252) : null,
+      dailySd: returns.length > 1 ? sd : null,
+      var95: sorted.length > 1 ? Math.max(0, -sorted[varIndex]) : null,
+      sharpe: sd > 0 && returns.length > 1 ? (mean * 252 - 0.02) / (sd * Math.sqrt(252)) : null,
+      sortino: downsideDeviation > 0 && returns.length > 1 ? (mean * 252 - 0.02) / (downsideDeviation * Math.sqrt(252)) : null,
+    };
+  }, [chartData]);
+
   const hasOpeningCapital = openingValue > 0;
   const hasExternalFlows = externalFlows.length > 0;
 
@@ -436,6 +607,11 @@ export default function Analytics({
                     <th>First close</th>
                     <th>Latest close</th>
                     <th>Price change</th>
+                    <th>Volatility (ann.)</th>
+                    <th>Max drawdown</th>
+                    <th>Historical VaR 95% (daily)</th>
+                    <th>Sharpe</th>
+                    <th>Sortino</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -449,17 +625,86 @@ export default function Analytics({
                       <td>{formatMarketPrice(row.firstClose, row.currency)}</td>
                       <td>{formatMarketPrice(row.lastClose, row.currency)}</td>
                       <td>{row.change === null ? '—' : (row.change >= 0 ? '+' : '') + (row.change * 100).toFixed(2) + '%'}</td>
+                      <td>{row.annualizedVolatility === null ? '—' : (row.annualizedVolatility * 100).toFixed(2) + '%'}</td>
+                      <td>{row.maxDrawdown === null ? '—' : (row.maxDrawdown * 100).toFixed(2) + '%'}</td>
+                      <td>{row.historicalVar95 === null ? '—' : (row.historicalVar95 * 100).toFixed(2) + '%'}</td>
+                      <td>{row.sharpeRatio === null ? '—' : row.sharpeRatio.toFixed(2)}</td>
+                      <td>{row.sortinoRatio === null ? '—' : row.sortinoRatio.toFixed(2)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8, marginTop: 12 }}>
-              Price change compares the first and latest stored closing prices in the listing currency. It is not the portfolio return and does not account for trades, dividends, taxes, FX or changing holdings.
+              Risk metrics are calculated per asset from stored daily adjusted closes, using 252 trading days and a 2% annual risk-free rate. Historical VaR is the 95th-percentile one-day loss estimate. These are asset-level historical estimates, not portfolio-level forecasts; they do not include FX conversion, taxes, fees or correlations.
             </p>
           </>
         )}
       </section>
+
+      <section className="panel" style={{ padding: 20, marginBottom: 20 }}>
+        <div className="panel-heading">
+          <div>
+            <h3>Performance Charts</h3>
+            <p>Indexed price performance, rebased to 0% at the start of the selected period</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+          <label style={{ display: 'grid', gap: 6, color: 'var(--muted)', fontSize: 12 }}>
+            Chart
+            <select value={chartAsset} onChange={(event) => setChartAsset(event.target.value)} style={{ minWidth: 190 }}>
+              <option value="PORTFOLIO">Portfolio (weighted proxy)</option>
+              {assets.filter((asset) => marketSeries[asset.ticker]?.length).map((asset) => (
+                <option key={asset.ticker} value={asset.ticker}>{asset.name} ({asset.ticker})</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'grid', gap: 6, color: 'var(--muted)', fontSize: 12 }}>
+            Period
+            <select value={chartRange} onChange={(event) => setChartRange(event.target.value)} style={{ minWidth: 130 }}>
+              <option value="1Y">1 year</option>
+              <option value="3Y">3 years</option>
+              <option value="MAX">Maximum history</option>
+            </select>
+          </label>
+        </div>
+        <PerformanceChart
+          title={chartAsset === 'PORTFOLIO' ? 'Portfolio market performance (weighted proxy)' : `${assets.find((asset) => asset.ticker === chartAsset)?.name ?? chartAsset} performance`}
+          points={chartData}
+        />
+        <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8 }}>
+          Methodology: individual charts use each asset's stored adjusted closing prices. The portfolio chart combines asset price returns using current market-value weights; it is an indicative market-performance proxy, not an exact historical portfolio return. It currently excludes historical trades and cash flows, FX effects, cash balances, fees and taxes. Use the ledger-based XIRR below for money-weighted performance; exact daily portfolio TWR requires dated historical portfolio valuations.
+        </p>
+      </section>
+
+      <section className="metrics" style={{ marginBottom: 20 }}>
+        <div className="metric-card">
+          <span className="metric-label">{chartAsset === 'PORTFOLIO' ? 'PORTFOLIO PROXY SHARPE' : 'ASSET SHARPE RATIO'}</span>
+          <strong className="metric-value">{chartRisk.sharpe === null ? '—' : chartRisk.sharpe.toFixed(2)}</strong>
+          <span className="metric-note">Annualized, 2% risk-free rate</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">ANNUALIZED SD</span>
+          <strong className="metric-value">{chartRisk.volatility === null ? '—' : percentage(chartRisk.volatility)}</strong>
+          <span className="metric-note">Standard deviation of daily returns × √252</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">DAILY SD</span>
+          <strong className="metric-value">{chartRisk.dailySd === null ? '—' : percentage(chartRisk.dailySd)}</strong>
+          <span className="metric-note">Standard deviation of daily returns</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">HISTORICAL VaR 95% (DAILY)</span>
+          <strong className="metric-value">{chartRisk.var95 === null ? '—' : percentage(chartRisk.var95)}</strong>
+          <span className="metric-note">Historical one-day loss threshold</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">SORTINO RATIO</span>
+          <strong className="metric-value">{chartRisk.sortino === null ? '—' : chartRisk.sortino.toFixed(2)}</strong>
+          <span className="metric-note">Downside-risk-adjusted return</span>
+        </div>
+      </section>
+
       <section className="welcome-row">
         <div>
           <h2>Portfolio Performance</h2>
