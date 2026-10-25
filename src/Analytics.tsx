@@ -873,6 +873,11 @@ export default function Analytics({
           <span className="metric-note">Standard deviation of daily returns</span>
         </div>
         <div className="metric-card">
+          <span className="metric-label">MAX DRAWDOWN</span>
+          <strong className="metric-value">{chartRisk.maxDrawdown === null ? '—' : percentage(chartRisk.maxDrawdown)}</strong>
+          <span className="metric-note">Largest peak-to-trough decline in the selected series</span>
+        </div>
+        <div className="metric-card">
           <span className="metric-label">HISTORICAL VaR {varConfidence}% ({varHorizon})</span>
           <strong className="metric-value">{chartRisk.var === null ? '—' : percentage(chartRisk.var)}</strong>
           <span className="metric-note">{chartRisk.var === null ? `At least 20 rolling observations are required (currently ${chartRisk.varObservations}).` : `Historical ${varHorizon} loss threshold based on ${chartRisk.varObservations} rolling observations.`}</span>
@@ -1039,7 +1044,7 @@ export default function Analytics({
               lineHeight: 1.8,
             }}
           >
-            When historical prices are available, this calculation links daily reconstructed portfolio valuations and adjusts for dated external flows. For assets without market history, the reconstruction uses static opening values or transaction-cost estimates, so results may be incomplete.
+            When historical prices are available, this calculation links reconstructed valuations and adjusts for dated external flows. The historical series begins on {portfolioValuations[0]?.date ?? 'the first usable market-data date'}, which may be later than the performance start date if prices are missing. For assets without market history, static opening values or transaction-cost estimates are used, so results may be incomplete.
           </p>
         </div>
       </section>
