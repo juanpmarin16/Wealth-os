@@ -3,7 +3,7 @@ import { db } from './data/database';
 
 type PortfolioAsset = { name: string; ticker: string; category: string; value: number };
 type Props = { initialPortfolioValue: number; portfolioAssets: PortfolioAsset[] };
-type PathSummary = { ending: number; realEnding: number; survived: boolean; maxDrawdown: number; yearly: number[]; annualReturns: number[]; totalContributions: number; totalWithdrawals: number };
+type PathSummary = { ending: number; realEnding: number; survived: boolean; maxDrawdown: number; yearly: number[]; annualizedReturn: number; totalContributions: number; totalWithdrawals: number };
 type HistoryRow = { date: string; returns: number[] };
 type Model = 'historical' | 'statistical' | 'parameterized';
 type Distribution = 'normal' | 'student';
@@ -37,7 +37,7 @@ function studentRandom(df: number) {
   for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
   return randomNormal() / Math.sqrt(Math.max(chi / df, 1e-9)) * Math.sqrt((df - 2) / df);
 }
-function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage' | 'life', withdrawalPct: number, currentAge: number, sequenceStress: number, blockYears: number): PathSummary {
+function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, inflationVol: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage' | 'life', withdrawalPct: number, currentAge: number, sequenceStress: number, blockYears: number): PathSummary {
   const steps = years * 12;
   const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
   const historicalRows = history.length ? history : [];
@@ -63,12 +63,13 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
     const original = monthlyAssetReturns.slice();
     order.forEach((source, target) => { for (let m = 0; m < 12; m++) monthlyAssetReturns[target * 12 + m] = original[source * 12 + m]; });
   }
-  let balance = start, peak = Math.max(start, 1), maxDrawdown = 0, cumulativeInflation = 1, survived = true, totalContributions = 0, totalWithdrawals = 0;
+  let balance = start, peak = Math.max(start, 1), maxDrawdown = 0, cumulativeInflation = 1, survived = true, totalContributions = 0, totalWithdrawals = 0, growthFactor = 1;
   const yearly: number[] = [start];
   const cashflowEvery = 12 / frequency;
   for (let month = 0; month < steps; month++) {
-    cumulativeInflation *= Math.max(.5, 1 + (inflation / 100) / 12 + (inflation / 100) * .35 / Math.sqrt(12) * randomNormal());
+    cumulativeInflation *= Math.max(.5, 1 + (inflation / 100) / 12 + (inflationVol / 100) / Math.sqrt(12) * randomNormal());
     const r = monthlyAssetReturns[month].reduce((v, ret, i) => v + weights[i] * ret, 0);
+    growthFactor *= Math.max(.05, 1 + r);
     balance = Math.max(0, balance * (1 + r));
     if ((month + 1) % cashflowEvery === 0) {
       let flow = cashflow * (inflationAdjusted ? cumulativeInflation : 1) / frequency;
@@ -82,7 +83,7 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
     maxDrawdown = Math.max(maxDrawdown, peak > 0 ? (peak - balance) / peak : 0);
     if ((month + 1) % 12 === 0) yearly.push(balance);
   }
-  return { ending: balance, realEnding: balance / Math.max(cumulativeInflation, .01), survived, maxDrawdown, yearly, annualReturns: [], totalContributions, totalWithdrawals };
+  return { ending: balance, realEnding: balance / Math.max(cumulativeInflation, .01), survived, maxDrawdown, yearly, annualizedReturn: Math.pow(growthFactor, 1 / Math.max(1, years)) - 1, totalContributions, totalWithdrawals };
 }
 
 function Histogram({ values }: { values: number[] }) {
@@ -106,6 +107,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [runs, setRuns] = useState('5000');
   const [inflationAdjusted, setInflationAdjusted] = useState(true);
   const [inflation, setInflation] = useState('2.5');
+  const [inflationVol, setInflationVol] = useState('1.5');
   const [assets, setAssets] = useState<Array<{ name: string; ticker: string; weight: number; mean: number; vol: number }>>(() => {
     const total = portfolioAssets.reduce((sum, asset) => sum + Math.max(0, asset.value), 0);
     return portfolioAssets.length
@@ -190,7 +192,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
       const sj = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[1] - mj) ** 2, 0));
       return si > 0 && sj > 0 ? clamp(cov / (si * sj), -.95, .95) : 0;
     }));
-    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, clamp(Number(currentAge) || 40, 18, 99), Number(sequenceStress) || 0, Number(blockYears) || 1)));
+    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, Number(inflationVol) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, clamp(Number(currentAge) || 40, 18, 99), Number(sequenceStress) || 0, Number(blockYears) || 1)));
   };
 
   const stats = useMemo(() => {
@@ -202,7 +204,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const medianPath = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.5));
     const p10Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.1));
     const p90Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.9));
-    const annualized = results.map(r => currentValue > 0 && r.ending > 0 ? Math.pow(r.ending / currentValue, 1 / Math.max(1, Number(years))) - 1 : -1);
+    const annualized = results.map(r => r.annualizedReturn);
     const percentiles = [.05,.1,.25,.5,.75,.9,.95];
     const distributionRows = percentiles.map(p => [(p * 100) + 'th', euro(quantile(nominal, p)), euro(quantile(real, p)), pct(quantile(annualized, p))]);
     const riskRows = [
@@ -251,7 +253,8 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Cashflow frequency<select value={frequency} onChange={e => setFrequency(e.target.value)}><option value="1">Annually</option><option value="2">Semi-annually</option><option value="4">Quarterly</option><option value="12">Monthly</option></select></label>
           <label>Cashflow type<select value={flowType} onChange={e => setFlowType(e.target.value as 'contribution' | 'withdrawal' | 'percentage' | 'life')}><option value="contribution">Contributions</option><option value="withdrawal">Withdrawals</option><option value="percentage">Fixed percentage withdrawals</option><option value="life">Life-expectancy withdrawals</option></select></label>
           <label>Simulation paths<input type="number" min="100" max="20000" step="100" value={runs} onChange={e => setRuns(e.target.value)} /></label>
-          <label>Expected inflation (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
+          <label>Expected inflation mean (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
+          <label>Inflation volatility (%)<input type="number" min="0" max="20" step="0.1" value={inflationVol} onChange={e => setInflationVol(e.target.value)} /></label>
           {model === 'historical' && <label>Bootstrap block length (years)<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="1">1 year (single-year bootstrap)</option><option value="2">2 years</option><option value="3">3 years</option><option value="5">5 years</option></select></label>}
           <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns</option><option value="parameterized">Parameterized returns</option></select></label>
           {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as Distribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
