@@ -81,6 +81,17 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
   return { ending: balance, realEnding: balance / Math.max(cumulativeInflation, .01), survived, maxDrawdown, yearly, annualReturns: [], totalContributions, totalWithdrawals };
 }
 
+function Histogram({ values }: { values: number[] }) {
+  const bins = 24, max = Math.max(...values, 1), min = Math.min(...values, 0), step = (max - min) / bins || 1;
+  const counts = Array(bins).fill(0) as number[];
+  values.forEach(v => counts[clamp(Math.floor((v - min) / step), 0, bins - 1)]++);
+  const peak = Math.max(...counts, 1), width = 760, height = 220, pad = 28, gap = 3, barW = (width - 2 * pad) / bins;
+  return <svg className="mc-chart" viewBox={'0 0 ' + width + ' ' + height} role="img" aria-label="Ending balance distribution">
+    {[0, .5, 1].map(t => <line key={t} x1={pad} x2={width - pad} y1={height - pad - (height - 2 * pad) * t} y2={height - pad - (height - 2 * pad) * t} className="mc-gridline" />)}
+    {counts.map((c, i) => <rect key={i} x={pad + i * barW + gap / 2} y={height - pad - (height - 2 * pad) * c / peak} width={Math.max(1, barW - gap)} height={(height - 2 * pad) * c / peak} rx="2" fill="#7185ed" opacity=".8" />)}
+    <text x={pad} y={height - 7} className="mc-axis-label">{euro(min)}</text><text x={width - pad} y={height - 7} textAnchor="end" className="mc-axis-label">{euro(max)}</text>
+  </svg>;
+}
 export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAssets }: Props) {
   const suggestedStart = Math.max(0, Math.round(initialPortfolioValue || 0));
   const [initialAmount, setInitialAmount] = useState(String(suggestedStart));
@@ -148,7 +159,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const duration = clamp(Math.round(Number(years)), 1, 60);
     const flowFrequency = Number(frequency);
     const amount = Number(cashflow);
-    if (model === 'historical' && history.length < 12) { setResults(null); return; }
+    if (model === 'historical' && history.length < 12) { setError('Historical bootstrap needs at least 12 aligned monthly observations. Import market history or select a statistical/parameterized model.'); setResults(null); return; }
     const n = normalizedAssets.length;
     const correlationMatrix = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => {
       if (i === j) return 1;
@@ -173,7 +184,19 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const medianPath = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.5));
     const p10Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.1));
     const p90Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.9));
-    return { nominal, real, drawdowns, medianPath, p10Path, p90Path, survival: results.filter(r => r.survived && r.ending > 0).length / results.length, lossProbability: results.filter(r => r.ending < currentValue).length / results.length, yearlyRows: Array.from({ length: yearsCount + 1 }, (_, y) => [String(y), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(r => r.yearly[y] ?? 0), p)))]) };
+    const annualized = results.map(r => currentValue > 0 && r.ending > 0 ? Math.pow(r.ending / currentValue, 1 / Math.max(1, Number(years))) - 1 : -1);
+    const percentiles = [.05,.1,.25,.5,.75,.9,.95];
+    const distributionRows = percentiles.map(p => [(p * 100) + 'th', euro(quantile(nominal, p)), euro(quantile(real, p)), pct(quantile(annualized, p))]);
+    const riskRows = [
+      ['Average total contributions', euro(results.reduce((sum, r) => sum + r.totalContributions, 0) / results.length)],
+      ['Average total withdrawals', euro(results.reduce((sum, r) => sum + r.totalWithdrawals, 0) / results.length)],
+      ['Average ending balance', euro(nominal.reduce((sum, value) => sum + value, 0) / nominal.length)],
+      ['Probability of ending below initial value', pct(results.filter(r => r.ending < currentValue).length / results.length)],
+      ['Probability of funding all withdrawals', pct(results.filter(r => r.survived && r.ending > 0).length / results.length)],
+      ['Median maximum drawdown', pct(quantile(drawdowns, .5))],
+      ['95th percentile maximum drawdown', pct(quantile(drawdowns, .95))]
+    ];
+    return { nominal, real, drawdowns, medianPath, p10Path, p90Path, survival: results.filter(r => r.survived && r.ending > 0).length / results.length, lossProbability: results.filter(r => r.ending < currentValue).length / results.length, distributionRows, riskRows, yearlyRows: Array.from({ length: yearsCount + 1 }, (_, y) => [String(y), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(r => r.yearly[y] ?? 0), p)))]) };
   }, [results, initialAmount, years, currentValue]);
 
   const updateAsset = (index: number, field: 'name' | 'ticker' | 'weight' | 'mean' | 'vol', value: string) => {
@@ -238,6 +261,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           </div>
           <div className="panel mc-chart-panel"><div className="mc-section-title"><div><h3>Portfolio balance over time</h3><p>10th–90th percentile range and median path</p></div></div>{chart(stats.p10Path, stats.medianPath, stats.p90Path)}<div className="mc-legend"><span><i className="mc-legend-low" />10th percentile</span><span><i className="mc-legend-median" />Median</span><span><i className="mc-legend-high" />90th percentile</span></div></div>
           <div className="panel mc-table-panel"><div className="mc-section-title"><div><h3>Portfolio value by year</h3><p>Percentile table of nominal year-end balances</p></div></div><table className="mc-summary-table"><thead><tr><th>Year</th><th>10th</th><th>25th</th><th>Median</th><th>75th</th><th>90th</th></tr></thead><tbody>{stats.yearlyRows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>
+          <div className="panel mc-chart-panel"><div className="mc-section-title"><div><h3>Ending portfolio distribution</h3><p>Frequency histogram of simulated terminal balances</p></div></div><Histogram values={stats.nominal}/></div>
+          <div className="panel mc-table-panel"><div className="mc-section-title"><div><h3>Portfolio value by year</h3><p>Nominal year-end balance percentiles across all paths</p></div></div><table className="mc-summary-table"><thead><tr><th>Year</th><th>10th</th><th>25th</th><th>Median</th><th>75th</th><th>90th</th></tr></thead><tbody>{stats.yearlyRows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>
+          <div className="panel mc-table-panel"><div className="mc-section-title"><div><h3>Ending balance and return distribution</h3><p>Nominal and inflation-adjusted ending value plus annualized return</p></div></div><table className="mc-summary-table"><thead><tr><th>Percentile</th><th>Nominal ending</th><th>Real ending</th><th>Annualized return</th></tr></thead><tbody>{stats.distributionRows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>
+          <div className="panel mc-table-panel"><div className="mc-section-title"><div><h3>Cashflow and risk summary</h3><p>Capital survival, cashflows and drawdown outcomes</p></div></div><table className="mc-summary-table"><thead><tr><th>Metric</th><th>Result</th></tr></thead><tbody>{stats.riskRows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>
           <div className="panel mc-table-panel"><div className="mc-section-title"><div><h3>Ending balance distribution</h3><p>Percentiles of all simulated portfolio paths</p></div></div><table className="mc-summary-table"><thead><tr><th>Metric</th><th>5th</th><th>10th</th><th>25th</th><th>50th</th><th>75th</th><th>90th</th><th>95th</th></tr></thead><tbody>
             <tr><td>Ending balance (nominal)</td>{[.05,.1,.25,.5,.75,.9,.95].map(p => <td key={p}>{euro(quantile(stats.nominal,p))}</td>)}</tr>
             <tr><td>Ending balance (real)</td>{[.05,.1,.25,.5,.75,.9,.95].map(p => <td key={p}>{euro(quantile(stats.real,p))}</td>)}</tr>
