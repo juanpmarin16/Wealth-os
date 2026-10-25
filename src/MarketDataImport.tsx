@@ -125,7 +125,11 @@ function getSavedApiUrl(): string {
   }
 }
 
-type MarketDataImportProps = {\n  onPricesImported?: (symbol: string, latestPrice: number, currency: string) => void;\n};\n\nexport default function MarketDataImport({ onPricesImported }: MarketDataImportProps) {
+type MarketDataImportProps = {
+  onPricesImported?: (symbol: string, latestPrice: number, currency: string) => void;
+};
+
+export default function MarketDataImport({ onPricesImported }: MarketDataImportProps) {
   const [symbol, setSymbol] = useState("VGWL.DE");
   const [instrumentName, setInstrumentName] = useState("Vanguard FTSE All-World UCITS ETF");
   const [assetType, setAssetType] = useState<AssetType>("etf");
