@@ -1113,10 +1113,11 @@ function App() {
           <div className="local-status">
             <span className="status-dot" />
             <div>
-              <strong>Local mode</strong>
-              <small>Stored in this browser</small>
+              <strong>Cloud sync enabled</strong>
+              <small>Portfolio saved across browsers</small>
             </div>
           </div>
+          <button className="text-button" onClick={signOut} style={{ marginTop: 12 }}>Sign out</button>
           <small className="version-label">WEALTH OS · ACCOUNTING V2</small>
         </div>
       </aside>
@@ -1814,10 +1815,11 @@ function App() {
             assets={initialAssets}
             onPricesImported={async (symbol, latestPrice, quoteCurrency) => {
               const currency = quoteCurrency.toUpperCase();
-              let eurPrice = latestPrice;
-              if (currency !== 'EUR') {
+              const fxCurrency = currency === 'GBX' ? 'GBP' : currency;
+              let eurPrice = currency === 'GBX' ? latestPrice / 100 : latestPrice;
+              if (fxCurrency !== 'EUR') {
                 try {
-                  const fxSymbol = `EUR${currency}=X`;
+                  const fxSymbol = `EUR${fxCurrency}=X`;
                   const fxResponse = await fetch(`${PORTFOLIO_API_URL}/api/history?symbol=${encodeURIComponent(fxSymbol)}&period=5d`);
                   const fxPayload: unknown = await fxResponse.json();
                   if (fxResponse.ok && isRecord(fxPayload) && Array.isArray(fxPayload.prices)) {
