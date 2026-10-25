@@ -1953,7 +1953,7 @@ function App() {
                     const latestFx = (fxPayload.prices as Array<Record<string, unknown>>)
                       .filter((item) => typeof item.close === 'number' && item.close > 0)
                       .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
-                    if (latestFx && typeof latestFx.close === 'number') eurPrice = latestPrice / latestFx.close;
+                    if (latestFx && typeof latestFx.close === 'number') eurPrice = eurPrice / latestFx.close;
                     else throw new Error('No FX rate');
                   } else {
                     throw new Error('No FX rate');
