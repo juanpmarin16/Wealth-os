@@ -1601,6 +1601,7 @@ function App() {
 
         {page === 'Analytics' && (
           <Analytics
+            assets={initialAssets}
             currentValue={totalNetWorth}
             openingValue={
               initialAssets.reduce(
