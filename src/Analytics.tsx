@@ -190,8 +190,8 @@ function PerformanceChart({ title, points }: { title: string; points: ChartPoint
             ))}
             <line x1={padding.left} x2={width - padding.right} y1={y(0)} y2={y(0)} stroke="var(--muted, #9ca3af)" strokeWidth="1" />
             <polyline points={polyline} fill="none" stroke="var(--accent, #7c9cff)" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-            <text x={padding.left} y={height - 10} fontSize="11" fill="var(--muted, #9ca3af)}>{points[0].date}</text>
-            <text x={width - padding.right} y={height - 10} textAnchor="end" fontSize="11" fill="var(--muted, #9ca3af)}>{points[points.length - 1].date}</text>
+            <text x={padding.left} y={height - 10} fontSize="11" fill="var(--muted, #9ca3af)">{points[0].date}</text>
+            <text x={width - padding.right} y={height - 10} textAnchor="end" fontSize="11" fill="var(--muted, #9ca3af)">{points[points.length - 1].date}</text>
           </svg>
         </div>
       )}
