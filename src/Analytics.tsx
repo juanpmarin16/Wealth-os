@@ -251,6 +251,8 @@ export default function Analytics({
   const [marketSeries, setMarketSeries] = useState<Record<string, PricePoint[]>>({});
   const [chartAsset, setChartAsset] = useState('PORTFOLIO');
   const [chartRange, setChartRange] = useState('MAX');
+  const [varConfidence, setVarConfidence] = useState<'95' | '99'>('95');
+  const [varHorizon, setVarHorizon] = useState<'daily' | 'monthly' | 'annual'>('daily');
   const [marketHistoryLoading, setMarketHistoryLoading] = useState(false);
   const [marketHistoryError, setMarketHistoryError] = useState('');
 
@@ -385,20 +387,16 @@ export default function Analytics({
 
           if (converted.length > 0) series[asset.ticker] = converted;
 
-          const closes = orderedPrices
-            .map((price) => price.adjustedClose ?? price.close)
-            .filter((value) => Number.isFinite(value) && value > 0);
+          const closes = converted.map((point) => point.value).filter((value) => Number.isFinite(value) && value > 0);
           const returns = closes.slice(1).map((value, index) => value / closes[index] - 1)
-            .filter((value) => Number.isFinite(value));
-          const meanReturn = returns.length
-            ? returns.reduce((sum, value) => sum + value, 0) / returns.length
-            : 0;
+            .filter((value) => Number.isFinite(value) && value > -1);
+          const meanReturn = returns.length ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0;
           const variance = returns.length > 1
-            ? returns.reduce((sum, value) => sum + Math.pow(value - meanReturn, 2), 0) / (returns.length - 1)
+            ? returns.reduce((sum, value) => sum + (value - meanReturn) ** 2, 0) / (returns.length - 1)
             : 0;
-          const downside = returns.filter((value) => value < 0);
-          const downsideDeviation = downside.length
-            ? Math.sqrt(downside.reduce((sum, value) => sum + value * value, 0) / returns.length)
+          const riskFreeDaily = 0.02 / 252;
+          const downsideDeviation = returns.length
+            ? Math.sqrt(returns.reduce((sum, value) => sum + Math.min(value - riskFreeDaily, 0) ** 2, 0) / returns.length)
             : 0;
           const sortedReturns = [...returns].sort((a, b) => a - b);
           const varIndex = Math.max(0, Math.ceil(sortedReturns.length * 0.05) - 1);
@@ -419,15 +417,12 @@ export default function Analytics({
             lastDate: last.date,
             firstClose: first.adjustedClose ?? first.close,
             lastClose: last.adjustedClose ?? last.close,
-            change:
-              (first.adjustedClose ?? first.close) > 0
-                ? ((last.adjustedClose ?? last.close) / (first.adjustedClose ?? first.close)) - 1
-                : null,
+            change: closes.length > 1 && closes[0] > 0 ? closes[closes.length - 1] / closes[0] - 1 : null,
             annualizedVolatility: returns.length > 1 ? Math.sqrt(variance) * Math.sqrt(252) : null,
             maxDrawdown: returns.length > 1 ? maxDrawdown : null,
             historicalVar95: sortedReturns.length > 1 ? Math.max(0, -sortedReturns[varIndex]) : null,
-            sharpeRatio: variance > 0 && returns.length > 1 ? (meanReturn * 252 - 0.02) / (Math.sqrt(variance) * Math.sqrt(252)) : null,
-            sortinoRatio: downsideDeviation > 0 && returns.length > 1 ? (meanReturn * 252 - 0.02) / (downsideDeviation * Math.sqrt(252)) : null,
+            sharpeRatio: variance > 0 && returns.length > 1 ? ((meanReturn - riskFreeDaily) / Math.sqrt(variance)) * Math.sqrt(252) : null,
+            sortinoRatio: downsideDeviation > 0 && returns.length > 1 ? ((meanReturn - riskFreeDaily) / downsideDeviation) * Math.sqrt(252) : null,
           });
         }
 
@@ -501,15 +496,7 @@ export default function Analytics({
 
     const earliestMarketDate = [...allDates].sort()[0];
     const requestedStart = startDate || earliestMarketDate;
-    const openingAssetsWithHistory = assets.filter(
-      (asset) => asset.openingValue > 0 && (marketSeries[asset.ticker]?.length ?? 0) > 0,
-    );
-    const openingPriceDates = openingAssetsWithHistory
-      .map((asset) => marketSeries[asset.ticker].find((point) => point.date >= requestedStart)?.date)
-      .filter((date): date is string => Boolean(date));
-    const baselineDate = openingPriceDates.length
-      ? openingPriceDates.sort().at(-1)!
-      : [...allDates].filter((date) => date >= requestedStart).sort()[0];
+    const baselineDate = [...new Set(allDates.filter((date) => date >= requestedStart))].sort()[0];
     if (!baselineDate) return [];
 
     const initialQuantities = new Map<string, number>();
@@ -517,17 +504,19 @@ export default function Analytics({
 
     for (const asset of assets) {
       const history = marketSeries[asset.ticker] ?? [];
-      const basePrice = lastPriceOnOrBefore(history, baselineDate);
+      const basePrice = lastPriceOnOrBefore(history, baselineDate)
+        ?? history.find((point) => point.date >= baselineDate);
       if (asset.openingValue > 0 && basePrice && basePrice.value > 0) {
-        initialQuantities.set(asset.ticker, asset.openingValue / basePrice.value);
+        initialQuantities.set(asset.ticker.toUpperCase(), asset.openingValue / basePrice.value);
+        if (!lastPriceOnOrBefore(history, baselineDate)) staticOpeningValues.set(asset.ticker.toUpperCase(), asset.openingValue);
       } else if (asset.openingValue > 0) {
-        staticOpeningValues.set(asset.ticker, asset.openingValue);
+        staticOpeningValues.set(asset.ticker.toUpperCase(), asset.openingValue);
       }
     }
 
     const dates = [...new Set(allDates.filter((date) => date >= baselineDate))].sort();
     const orderedTransactions = [...transactions]
-      .filter((tx) => /^\d{4}-\d{2}-\d{2}$/.test(tx.date) && tx.date <= asOfDate)
+      .filter((tx) => /^\d{4}-\d{2}-\d{2}$/.test(tx.date) && tx.date > requestedStart && tx.date <= asOfDate)
       .sort((left, right) => left.date.localeCompare(right.date) || (left.id ?? '').localeCompare(right.id ?? ''));
 
     return dates.flatMap((date) => {
@@ -565,13 +554,10 @@ export default function Analytics({
       for (const asset of assets) {
         const ticker = asset.ticker.toUpperCase();
         const history = marketSeries[ticker] ?? [];
-        if (history.length > 0) {
-          const price = lastPriceOnOrBefore(history, date);
-          const quantity = quantities.get(ticker) ?? 0;
-          if (price && quantity > 0) assetsValue += quantity * price.value;
-        } else {
-          assetsValue += staticValues.get(ticker) ?? 0;
-        }
+        const price = lastPriceOnOrBefore(history, date);
+        const quantity = quantities.get(ticker) ?? 0;
+        if (price && quantity > 0) assetsValue += quantity * price.value;
+        else assetsValue += staticValues.get(ticker) ?? 0;
       }
 
       const value = assetsValue + cash;
@@ -691,23 +677,52 @@ export default function Analytics({
     const returns = chartData.slice(1).map((point, index) => {
       const previous = chartData[index].value / 100 + 1;
       const current = point.value / 100 + 1;
-      return previous > 0 ? current / previous - 1 : 0;
-    }).filter(Number.isFinite);
-    const mean = returns.length ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0;
-    const variance = returns.length > 1 ? returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1) : 0;
-    const sorted = [...returns].sort((a, b) => a - b);
-    const varIndex = Math.max(0, Math.ceil(sorted.length * 0.05) - 1);
+      return previous > 0 ? current / previous - 1 : Number.NaN;
+    }).filter((value) => Number.isFinite(value) && value > -1);
+
+    const count = returns.length;
+    const mean = count ? returns.reduce((sum, value) => sum + value, 0) / count : 0;
+    const variance = count > 1
+      ? returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (count - 1)
+      : 0;
     const sd = Math.sqrt(variance);
-    const downside = returns.filter((value) => value < 0);
-    const downsideDeviation = returns.length ? Math.sqrt(downside.reduce((sum, value) => sum + value ** 2, 0) / returns.length) : 0;
+    const riskFreeDaily = 0.02 / 252;
+    const downsideDeviation = count
+      ? Math.sqrt(returns.reduce((sum, value) => sum + Math.min(value - riskFreeDaily, 0) ** 2, 0) / count)
+      : 0;
+
+    const horizonWindow = varHorizon === 'daily' ? 1 : varHorizon === 'monthly' ? 21 : 252;
+    const horizonReturns: number[] = [];
+    for (let end = horizonWindow - 1; end < returns.length; end += 1) {
+      let growth = 1;
+      for (let offset = end - horizonWindow + 1; offset <= end; offset += 1) growth *= 1 + returns[offset];
+      if (Number.isFinite(growth)) horizonReturns.push(growth - 1);
+    }
+    const sortedHorizonReturns = [...horizonReturns].sort((a, b) => a - b);
+    const tailProbability = 1 - Number(varConfidence) / 100;
+    const quantileIndex = sortedHorizonReturns.length
+      ? Math.max(0, Math.ceil(sortedHorizonReturns.length * tailProbability) - 1)
+      : -1;
+    const quantile = quantileIndex >= 0 ? sortedHorizonReturns[quantileIndex] : null;
+
     return {
-      volatility: returns.length > 1 ? sd * Math.sqrt(252) : null,
-      dailySd: returns.length > 1 ? sd : null,
-      var95: sorted.length > 1 ? Math.max(0, -sorted[varIndex]) : null,
-      sharpe: sd > 0 && returns.length > 1 ? (mean * 252 - 0.02) / (sd * Math.sqrt(252)) : null,
-      sortino: downsideDeviation > 0 && returns.length > 1 ? (mean * 252 - 0.02) / (downsideDeviation * Math.sqrt(252)) : null,
+      volatility: count > 1 ? sd * Math.sqrt(252) : null,
+      dailySd: count > 1 ? sd : null,
+      var: sortedHorizonReturns.length >= 20 && quantile !== null ? Math.max(0, -quantile) : null,
+      varObservations: sortedHorizonReturns.length,
+      sharpe: sd > 0 && count > 1 ? ((mean - riskFreeDaily) / sd) * Math.sqrt(252) : null,
+      sortino: downsideDeviation > 0 && count > 1 ? ((mean - riskFreeDaily) / downsideDeviation) * Math.sqrt(252) : null,
+      maxDrawdown: (() => {
+        let peak = 1, drawdown = 0, growth = 1;
+        for (const value of returns) {
+          growth *= 1 + value;
+          peak = Math.max(peak, growth);
+          drawdown = Math.min(drawdown, growth / peak - 1);
+        }
+        return count > 1 ? drawdown : null;
+      })(),
     };
-  }, [chartData]);
+  }, [chartData, varConfidence, varHorizon]);
 
   const hasOpeningCapital = openingValue > 0;
   const hasExternalFlows = externalFlows.length > 0;
@@ -812,10 +827,27 @@ export default function Analytics({
           points={chartData}
         />
         <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8 }}>
-          Methodology: individual assets are converted to EUR using historical FX rates where available. The portfolio chart reconstructs daily holdings from opening balances and dated buys/sells, includes cash, dividends, fees and external flows, and links daily returns after adjusting for deposits and withdrawals. Opening positions with price history are scaled from their opening EUR values to the first available historical prices. Assets without price history are held at opening value or transaction cost and are flagged below. Cash-flow timing is assumed at end of day; results are therefore a ledger-based daily estimate, not an audited valuation.
+          Methodology: individual assets are converted to EUR using historical FX rates where available. The portfolio chart reconstructs holdings from opening balances and dated buys/sells, includes cash, dividends, fees and external flows, and links returns after adjusting for deposits and withdrawals. Opening positions with price history are scaled from their opening EUR values to the first available historical prices. Assets without price history are held at opening value or transaction cost and are flagged below. Cash-flow timing is assumed at end of day; results are therefore a ledger-based daily estimate, not an audited valuation.
         </p>
       </section>
 
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '0 0 14px' }}>
+        <label style={{ display: 'grid', gap: 6, color: 'var(--muted)', fontSize: 12 }}>
+          VaR confidence level
+          <select value={varConfidence} onChange={(event) => setVarConfidence(event.target.value as '95' | '99')} style={{ minWidth: 130 }}>
+            <option value="95">95%</option>
+            <option value="99">99%</option>
+          </select>
+        </label>
+        <label style={{ display: 'grid', gap: 6, color: 'var(--muted)', fontSize: 12 }}>
+          VaR horizon
+          <select value={varHorizon} onChange={(event) => setVarHorizon(event.target.value as 'daily' | 'monthly' | 'annual')} style={{ minWidth: 130 }}>
+            <option value="daily">Daily (1 trading day)</option>
+            <option value="monthly">Monthly (21 trading days)</option>
+            <option value="annual">Annual (252 trading days)</option>
+          </select>
+        </label>
+      </div>
       <section className="metrics" style={{ marginBottom: 20 }}>
         <div className="metric-card">
           <span className="metric-label">{chartAsset === 'PORTFOLIO' ? 'PORTFOLIO PROXY SHARPE' : 'ASSET SHARPE RATIO'}</span>
@@ -833,9 +865,9 @@ export default function Analytics({
           <span className="metric-note">Standard deviation of daily returns</span>
         </div>
         <div className="metric-card">
-          <span className="metric-label">HISTORICAL VaR 95% (DAILY)</span>
-          <strong className="metric-value">{chartRisk.var95 === null ? '—' : percentage(chartRisk.var95)}</strong>
-          <span className="metric-note">Historical one-day loss threshold</span>
+          <span className="metric-label">HISTORICAL VaR {varConfidence}% ({varHorizon})</span>
+          <strong className="metric-value">{chartRisk.var === null ? '—' : percentage(chartRisk.var)}</strong>
+          <span className="metric-note">{chartRisk.var === null ? `At least 20 rolling observations are required (currently ${chartRisk.varObservations}).` : `Historical ${varHorizon} loss threshold based on ${chartRisk.varObservations} rolling observations.`}</span>
         </div>
         <div className="metric-card">
           <span className="metric-label">SORTINO RATIO</span>
