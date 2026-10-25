@@ -197,7 +197,9 @@ def history(
     exchange = ""
     try:
         info = ticker.get_history_metadata() or {}
-        currency = str(info.get("currency") or currency).upper()
+        raw_currency = str(info.get("currency") or currency)
+        # Yahoo often reports UK-listed ETF prices in pence (GBp), not pounds.
+        currency = "GBX" if raw_currency == "GBp" else raw_currency.upper()
         exchange = str(info.get("exchangeName") or info.get("exchange") or "")
     except Exception:
         # Some Yahoo listings omit metadata even when price history is available.
