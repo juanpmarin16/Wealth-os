@@ -520,6 +520,7 @@ export default function Analytics({
     openingValue,
     currentValue,
     externalFlows,
+    portfolioValuations,
   ]);
 
   const twr = useMemo(() => {
@@ -534,21 +535,14 @@ export default function Analytics({
       return null;
     }
 
-    const valuations: PortfolioValuation[] = [
-      {
-        date: startDate,
-        value: openingValue,
-      },
-      {
-        date: asOfDate,
-        value: currentValue,
-      },
-    ];
+    const valuations = portfolioValuations.length > 1
+      ? portfolioValuations
+      : [
+          { date: startDate, value: openingValue },
+          { date: asOfDate, value: currentValue },
+        ];
 
-    return calculateTwr(
-      valuations,
-      externalFlows
-    );
+    return calculateTwr(valuations, externalFlows);
   }, [
     startDate,
     asOfDate,
@@ -558,56 +552,141 @@ export default function Analytics({
   ]);
 
 
+  const portfolioValuations = useMemo((): PortfolioValuation[] => {
+    const allDates = Object.values(marketSeries).flatMap((points) => points.map((point) => point.date));
+    if (allDates.length === 0) return [];
+
+    const earliestMarketDate = [...allDates].sort()[0];
+    const requestedStart = startDate || earliestMarketDate;
+    const openingAssetsWithHistory = assets.filter(
+      (asset) => asset.openingValue > 0 && (marketSeries[asset.ticker]?.length ?? 0) > 0,
+    );
+    const openingPriceDates = openingAssetsWithHistory
+      .map((asset) => marketSeries[asset.ticker].find((point) => point.date >= requestedStart)?.date)
+      .filter((date): date is string => Boolean(date));
+    const baselineDate = openingPriceDates.length
+      ? openingPriceDates.sort().at(-1)!
+      : [...allDates].filter((date) => date >= requestedStart).sort()[0];
+    if (!baselineDate) return [];
+
+    const initialQuantities = new Map<string, number>();
+    const staticOpeningValues = new Map<string, number>();
+    const qualityWarnings = new Set<string>();
+
+    for (const asset of assets) {
+      const history = marketSeries[asset.ticker] ?? [];
+      const basePrice = lastPriceOnOrBefore(history, baselineDate);
+      if (asset.openingValue > 0 && basePrice && basePrice.value > 0) {
+        initialQuantities.set(asset.ticker, asset.openingValue / basePrice.value);
+      } else if (asset.openingValue > 0) {
+        staticOpeningValues.set(asset.ticker, asset.openingValue);
+        qualityWarnings.add(`${asset.ticker} has no usable price history; its opening value is held flat.`);
+      }
+    }
+
+    const dates = [...new Set(allDates.filter((date) => date >= baselineDate))].sort();
+    const orderedTransactions = [...transactions]
+      .filter((tx) => /^\\d{4}-\\d{2}-\\d{2}$/.test(tx.date) && tx.date <= asOfDate)
+      .sort((left, right) => left.date.localeCompare(right.date) || (left.id ?? '').localeCompare(right.id ?? ''));
+
+    return dates.flatMap((date) => {
+      let cash = openingCash;
+      const quantities = new Map(initialQuantities);
+      const staticValues = new Map(staticOpeningValues);
+
+      for (const tx of orderedTransactions) {
+        if (tx.date > date) break;
+        const ticker = tx.ticker.toUpperCase();
+        const history = marketSeries[ticker];
+        switch (tx.type) {
+          case 'Buy':
+            if (history?.length) quantities.set(ticker, (quantities.get(ticker) ?? 0) + Math.max(0, tx.quantity || 0));
+            else staticValues.set(ticker, (staticValues.get(ticker) ?? 0) + Math.max(0, tx.amount));
+            cash -= tx.amount + tx.fee;
+            break;
+          case 'Sell':
+            if (history?.length) quantities.set(ticker, Math.max(0, (quantities.get(ticker) ?? 0) - Math.max(0, tx.quantity || 0)));
+            else staticValues.set(ticker, Math.max(0, (staticValues.get(ticker) ?? 0) - Math.max(0, tx.amount)));
+            cash += tx.amount - tx.fee;
+            break;
+          case 'Dividend':
+          case 'Deposit':
+            cash += tx.amount - tx.fee;
+            break;
+          case 'Withdrawal':
+          case 'Fee':
+            cash -= tx.amount + tx.fee;
+            break;
+        }
+      }
+
+      let assetsValue = 0;
+      for (const asset of assets) {
+        const ticker = asset.ticker.toUpperCase();
+        const history = marketSeries[ticker] ?? [];
+        if (history.length > 0) {
+          const price = lastPriceOnOrBefore(history, date);
+          const quantity = quantities.get(ticker) ?? 0;
+          if (price && quantity > 0) assetsValue += quantity * price.value;
+        } else {
+          assetsValue += staticValues.get(ticker) ?? 0;
+        }
+      }
+
+      const value = assetsValue + cash;
+      return Number.isFinite(value) && value >= 0 ? [{ date, value }] : [];
+    }).filter((point, index, points) => index === 0 || point.date !== points[index - 1].date);
+  }, [assets, marketSeries, transactions, openingCash, startDate, asOfDate]);
+
+  const portfolioHistoryWarnings = useMemo(() => {
+    const warnings: string[] = [];
+    for (const asset of assets) {
+      if (asset.openingValue > 0 && !(marketSeries[asset.ticker]?.length)) {
+        warnings.push(`${asset.ticker}: opening value is held flat because no historical market prices are available.`);
+      }
+      const hasTrades = transactions.some((tx) => tx.ticker.toUpperCase() === asset.ticker.toUpperCase() && (tx.type === 'Buy' || tx.type === 'Sell'));
+      if (hasTrades && !(marketSeries[asset.ticker]?.length)) {
+        warnings.push(`${asset.ticker}: trade values are represented at transaction cost because market prices are unavailable.`);
+      }
+    }
+    return [...new Set(warnings)];
+  }, [assets, marketSeries, transactions]);
+
   const chartData = useMemo(() => {
     const rangeDays = chartRange === '1Y' ? 365 : chartRange === '3Y' ? 365 * 3 : Number.POSITIVE_INFINITY;
     const cutoff = Number.isFinite(rangeDays)
       ? new Date(new Date(asOfDate + 'T00:00:00Z').getTime() - rangeDays * 86400000).toISOString().slice(0, 10)
       : '';
-    const filtered = Object.fromEntries(Object.entries(marketSeries).map(([ticker, points]) => [
-      ticker,
-      points.filter((point) => !cutoff || point.date >= cutoff),
-    ])) as Record<string, PricePoint[]>;
-    const available = Object.entries(filtered).filter(([, points]) => points.length > 1);
-    if (chartAsset !== 'PORTFOLIO') {
-      const points = filtered[chartAsset] ?? [];
-      if (points.length < 2) return [];
-      const base = points[0].value;
-      return points.map((point) => ({ date: point.date, value: (point.value / base - 1) * 100 }));
-    }
-    if (!available.length) return [];
-    const totalWeight = available.reduce((sum, [ticker]) => {
-      const asset = assets.find((item) => item.ticker === ticker);
-      return sum + Math.max(0, (asset?.quantity ?? 0) * (asset?.currentPrice ?? 0));
-    }, 0);
-    const weights = available.map(([ticker]) => {
-      const asset = assets.find((item) => item.ticker === ticker);
-      const marketValue = Math.max(0, (asset?.quantity ?? 0) * (asset?.currentPrice ?? 0));
-      return [ticker, totalWeight > 0 ? marketValue / totalWeight : 1 / available.length] as const;
-    });
-    const dates = [...new Set(available.flatMap(([, points]) => points.map((point) => point.date)))].sort();
-    const lastKnown = new Map<string, PricePoint>();
-    const firstValues = new Map<string, number>();
-    const points: ChartPoint[] = [];
-    for (const date of dates) {
-      for (const [ticker, history] of available) {
-        const match = history.find((point) => point.date === date);
-        if (match) lastKnown.set(ticker, match);
-        if (!firstValues.has(ticker) && history[0]) firstValues.set(ticker, history[0].value);
+
+    if (chartAsset === 'PORTFOLIO') {
+      const filtered = portfolioValuations.filter((point) => !cutoff || point.date >= cutoff);
+      if (filtered.length < 2) return [];
+      let growth = 1;
+      const points: ChartPoint[] = [{ date: filtered[0].date, value: 0 }];
+      for (let index = 1; index < filtered.length; index += 1) {
+        const previous = filtered[index - 1];
+        const current = filtered[index];
+        const externalFlow = transactions.reduce((sum, tx) => {
+          if (tx.date > previous.date && tx.date <= current.date) {
+            if (tx.type === 'Deposit') return sum + tx.amount;
+            if (tx.type === 'Withdrawal') return sum - tx.amount;
+          }
+          return sum;
+        }, 0);
+        if (previous.value <= 0) continue;
+        const dailyReturn = (current.value - externalFlow) / previous.value - 1;
+        if (!Number.isFinite(dailyReturn) || dailyReturn <= -1) continue;
+        growth *= 1 + dailyReturn;
+        points.push({ date: current.date, value: (growth - 1) * 100 });
       }
-      let composite = 0;
-      let usedWeight = 0;
-      for (const [ticker, weight] of weights) {
-        const latest = lastKnown.get(ticker);
-        const base = firstValues.get(ticker);
-        if (latest && base && base > 0) {
-          composite += (latest.value / base) * weight;
-          usedWeight += weight;
-        }
-      }
-      if (usedWeight > 0) points.push({ date, value: ((composite / usedWeight) - 1) * 100 });
+      return points;
     }
-    return points;
-  }, [marketSeries, chartAsset, chartRange, asOfDate, assets]);
+
+    const points = (marketSeries[chartAsset] ?? []).filter((point) => !cutoff || point.date >= cutoff);
+    if (points.length < 2 || points[0].value <= 0) return [];
+    const base = points[0].value;
+    return points.map((point) => ({ date: point.date, value: (point.value / base - 1) * 100 }));
+  }, [marketSeries, chartAsset, chartRange, asOfDate, portfolioValuations, transactions]);
 
   const chartRisk = useMemo(() => {
     const returns = chartData.slice(1).map((point, index) => {
@@ -714,7 +793,7 @@ export default function Analytics({
           <label style={{ display: 'grid', gap: 6, color: 'var(--muted)', fontSize: 12 }}>
             Chart
             <select value={chartAsset} onChange={(event) => setChartAsset(event.target.value)} style={{ minWidth: 190 }}>
-              <option value="PORTFOLIO">Portfolio (weighted proxy)</option>
+              <option value="PORTFOLIO">Portfolio (ledger-based history)</option>
               {assets.filter((asset) => marketSeries[asset.ticker]?.length).map((asset) => (
                 <option key={asset.ticker} value={asset.ticker}>{asset.name} ({asset.ticker})</option>
               ))}
@@ -730,11 +809,11 @@ export default function Analytics({
           </label>
         </div>
         <PerformanceChart
-          title={chartAsset === 'PORTFOLIO' ? 'Portfolio market performance (weighted proxy)' : `${assets.find((asset) => asset.ticker === chartAsset)?.name ?? chartAsset} performance`}
+          title={chartAsset === 'PORTFOLIO' ? 'Historical portfolio performance (cash-flow adjusted)' : `${assets.find((asset) => asset.ticker === chartAsset)?.name ?? chartAsset} performance in EUR`}
           points={chartData}
         />
         <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8 }}>
-          Methodology: individual charts use each asset's stored adjusted closing prices. The portfolio chart combines asset price returns using current market-value weights; it is an indicative market-performance proxy, not an exact historical portfolio return. It currently excludes historical trades and cash flows, FX effects, cash balances, fees and taxes. Use the ledger-based XIRR below for money-weighted performance; exact daily portfolio TWR requires dated historical portfolio valuations.
+          Methodology: individual assets are converted to EUR using historical FX rates where available. The portfolio chart reconstructs daily holdings from opening balances and dated buys/sells, includes cash, dividends, fees and external flows, and links daily returns after adjusting for deposits and withdrawals. Opening positions with price history are scaled from their opening EUR values to the first available historical prices. Assets without price history are held at opening value or transaction cost and are flagged below. Cash-flow timing is assumed at end of day; results are therefore a ledger-based daily estimate, not an audited valuation.
         </p>
       </section>
 
@@ -886,7 +965,7 @@ export default function Analytics({
           <div className="panel-heading">
             <div>
               <h3>Time-Weighted Return (TWR)</h3>
-              <p>Modified Dietz estimate</p>
+              <p>Daily valuation-linked return when history is available</p>
             </div>
           </div>
 
@@ -921,11 +1000,7 @@ export default function Analytics({
               lineHeight: 1.8,
             }}
           >
-            This is an estimate based on opening and
-            current portfolio values and dated external
-            flows. It is not an exact daily time-weighted
-            return because historical portfolio
-            valuations are not stored.
+            When historical prices are available, this calculation links daily reconstructed portfolio valuations and adjusts for dated external flows. For assets without market history, the reconstruction uses static opening values or transaction-cost estimates, so results may be incomplete.
           </p>
         </div>
       </section>
@@ -993,12 +1068,15 @@ export default function Analytics({
           </p>
 
           <p>
-            <strong>Historical valuation limitation:</strong>{' '}
-            Wealth OS does not yet store a daily
-            history of portfolio valuations. Therefore,
-            TWR is an estimate rather than an exact
-            daily time-weighted return.
+            <strong>Historical valuation method:</strong>{' '}
+            Daily valuations are reconstructed from saved market prices, opening values, transaction quantities and the cash ledger. Deposits and withdrawals are adjusted as external flows. Where price history is missing, opening values are held flat and trade values use transaction cost.
           </p>
+          {portfolioHistoryWarnings.length > 0 && (
+            <p>
+              <strong>Data quality warnings:</strong>{' '}
+              {portfolioHistoryWarnings.join(' ')}
+            </p>
+          )}
 
           {!hasExternalFlows && (
             <p>
