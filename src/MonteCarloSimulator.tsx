@@ -19,7 +19,7 @@ function quantile(values: number[], p: number) {
   const lo = Math.floor(index);
   return sorted[lo] + (sorted[Math.min(lo + 1, sorted.length - 1)] - sorted[lo]) * (index - lo);
 }
-function pathFor(seed: number, years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], withdrawals: boolean): PathSummary {
+function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], withdrawals: boolean): PathSummary {
   let balance = start;
   let peak = Math.max(start, 0);
   let maxDrawdown = 0;
@@ -65,7 +65,6 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     { name: 'Bonds', weight: 40, mean: 3.5, vol: 7 },
   ]);
   const [results, setResults] = useState<PathSummary[] | null>(null);
-  const [hasRun, setHasRun] = useState(false);
 
   const totalWeight = assets.reduce((sum, a) => sum + a.weight, 0);
   const currentValue = Number(initialAmount) || 0;
@@ -77,8 +76,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     const duration = clamp(Math.round(Number(years)), 1, 60);
     const flowFrequency = Number(frequency);
     const amount = Number(cashflow);
-    setResults(Array.from({ length: count }, (_, i) => pathFor(i, duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, flowType === 'withdrawal')));
-    setHasRun(true);
+    setResults(Array.from({ length: count }, (_, i) => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, flowType === 'withdrawal')));
   };
 
   const stats = useMemo(() => {
