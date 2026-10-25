@@ -43,9 +43,12 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
   const historicalRows = history.length ? history : [];
   const L = cholesky(corr.length === assets.length ? corr : assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0)));
   const monthlyAssetReturns: number[][] = [];
+  let blockStart = Math.floor(Math.random() * Math.max(1, historicalRows.length));
+  const blockLength = Math.max(1, Math.round(blockYears)) * 12;
   for (let month = 0; month < steps; month++) {
     if (model === 'historical' && historicalRows.length) {
-      const row = historicalRows[Math.floor(Math.random() * historicalRows.length)];
+      if (month % blockLength === 0) blockStart = Math.floor(Math.random() * historicalRows.length);
+      const row = historicalRows[(blockStart + (month % blockLength)) % historicalRows.length];
       monthlyAssetReturns.push(assets.map((a, i) => Number.isFinite(row.returns[i]) ? row.returns[i] : Math.max(-.95, (Math.pow(1 + a.mean / 100, 1 / 12) - 1) + a.vol / 100 / Math.sqrt(12) * randomNormal())));
     } else {
       const z = assets.map(() => distribution === 'student' ? studentRandom(df) : randomNormal());
@@ -95,9 +98,9 @@ function Histogram({ values }: { values: number[] }) {
 export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAssets }: Props) {
   const suggestedStart = Math.max(0, Math.round(initialPortfolioValue || 0));
   const [initialAmount, setInitialAmount] = useState(String(suggestedStart));
-  const [cashflow, setCashflow] = useState('12000');
-  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage'>('contribution');
-  const [frequency, setFrequency] = useState('12');
+  const [cashflow, setCashflow] = useState('45000');
+  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage'>('withdrawal');
+  const [frequency, setFrequency] = useState('4');
   const [years, setYears] = useState('30');
   const [runs, setRuns] = useState('5000');
   const [inflationAdjusted, setInflationAdjusted] = useState(true);
@@ -156,6 +159,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const normalizedAssets = assets.map(a => ({ ...a, weight: a.weight / totalWeight }));
   const runSimulation = () => {
     if (!valid) return;
+    setError('');
     const count = clamp(Math.round(Number(runs)), 100, 20000);
     const duration = clamp(Math.round(Number(years)), 1, 60);
     const flowFrequency = Number(frequency);
