@@ -113,7 +113,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         const byInstrument = new Map(instruments.map(i => [i.id, i]));
         const series = assets.map(asset => {
           const normalize = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, '');
-          const keys = [normalize(asset.name), normalize((asset as typeof asset & { ticker?: string }).ticker || '')];
+          const keys = [normalize(asset.name), normalize(asset.ticker)];
           const listing = listings.find(l => keys.includes(normalize(l.symbol)) || keys.includes(normalize(byInstrument.get(l.instrumentId)?.name || '')));
           const rows = listing ? prices.filter(p => p.listingId === listing.id).sort((a, b) => a.date.localeCompare(b.date)) : [];
           return rows.map(p => ({ date: p.date.slice(0, 7), value: p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close }));
@@ -174,10 +174,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     return { nominal, real, drawdowns, medianPath, p10Path, p90Path, survival: results.filter(r => r.survived && r.ending > 0).length / results.length, lossProbability: results.filter(r => r.ending < currentValue).length / results.length, yearlyRows: Array.from({ length: yearsCount + 1 }, (_, y) => [String(y), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(r => r.yearly[y] ?? 0), p)))]) };
   }, [results, initialAmount, years, currentValue]);
 
-  const updateAsset = (index: number, field: 'name' | 'weight' | 'mean' | 'vol', value: string) => {
-    setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' ? value : Number(value) || 0 } : a));
+  const updateAsset = (index: number, field: 'name' | 'ticker' | 'weight' | 'mean' | 'vol', value: string) => {
+    setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' || field === 'ticker' ? value : Number(value) || 0 } : a));
   };
-  const addAsset = () => { if (assets.length < 8) setAssets(prev => [...prev, { name: `Asset ${prev.length + 1}`, weight: 0, mean: 5, vol: 15 }]); };
+  const addAsset = () => { if (assets.length < 8) setAssets(prev => [...prev, { name: `Asset ${prev.length + 1}`, ticker: '', weight: 0, mean: 5, vol: 15 }]); };
   const chart = (p10: number[], p50: number[], p90: number[]) => {
     const width = 760, height = 250, pad = 36;
     const max = Math.max(1, ...p90);
@@ -216,9 +216,9 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           {flowType === 'percentage' && <label>Annual withdrawal (%)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>}
           <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust cashflows</span></label>
         </div>
-        <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically in the simulation.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
-        <div className="mc-table-wrap"><table className="mc-assets-table"><thead><tr><th>Asset class</th><th>Weight %</th><th>Mean return %</th><th>Volatility %</th></tr></thead><tbody>
-          {assets.map((asset, i) => <tr key={i}><td><input aria-label={`Asset ${i + 1} name`} value={asset.name} onChange={e => updateAsset(i, 'name', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} weight`} type="number" min="0" max="100" value={asset.weight} onChange={e => updateAsset(i, 'weight', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} mean return`} type="number" min="-30" max="50" step="0.1" value={asset.mean} onChange={e => updateAsset(i, 'mean', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} volatility`} type="number" min="0" max="100" step="0.1" value={asset.vol} onChange={e => updateAsset(i, 'vol', e.target.value)} /></td></tr>)}
+        <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Saved tickers are matched to local market history.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
+        <div className="mc-table-wrap"><table className="mc-assets-table"><thead><tr><th>Asset</th><th>Ticker</th><th>Weight %</th><th>Mean return %</th><th>Volatility %</th><th></th></tr></thead><tbody>
+          {assets.map((asset, i) => <tr key={i}><td><input aria-label={`Asset ${i + 1} name`} value={asset.name} onChange={e => updateAsset(i, 'name', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} ticker`} value={asset.ticker} onChange={e => updateAsset(i, 'ticker', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} weight`} type="number" min="0" max="100" value={asset.weight} onChange={e => updateAsset(i, 'weight', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} mean return`} type="number" min="-30" max="50" step="0.1" value={asset.mean} onChange={e => updateAsset(i, 'mean', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} volatility`} type="number" min="0" max="100" step="0.1" value={asset.vol} onChange={e => updateAsset(i, 'vol', e.target.value)} /></td><td><button className="mc-remove" aria-label="Remove asset" onClick={() => setAssets(prev => prev.filter((_, j) => j !== i))} disabled={assets.length <= 1}>×</button></td></tr>)}
         </tbody></table></div>
         <div className="mc-allocation-foot"><span>Total entered allocation</span><strong className={Math.abs(totalWeight - 100) < 0.01 ? 'is-balanced' : ''}>{totalWeight.toFixed(1)}%</strong></div>
         <button className="primary-button mc-run-button" onClick={runSimulation} disabled={!valid || isLoadingHistory}><span>▶</span> Run {Number(runs).toLocaleString('en-GB')} simulations</button>
