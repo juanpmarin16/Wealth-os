@@ -37,7 +37,7 @@ function studentRandom(df: number) {
   for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
   return randomNormal() / Math.sqrt(Math.max(chi / df, 1e-9)) * Math.sqrt((df - 2) / df);
 }
-function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage', withdrawalPct: number, sequenceStress: number, blockYears: number): PathSummary {
+function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage' | 'life', withdrawalPct: number, currentAge: number, sequenceStress: number, blockYears: number): PathSummary {
   const steps = years * 12;
   const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
   const historicalRows = history.length ? history : [];
@@ -74,6 +74,7 @@ function pathFor(years: number, start: number, cashflow: number, frequency: numb
       let flow = cashflow * (inflationAdjusted ? cumulativeInflation : 1) / frequency;
       if (flowType === 'withdrawal') flow = -flow;
       if (flowType === 'percentage') flow = -Math.max(0, balance * withdrawalPct / 100 / frequency);
+      if (flowType === 'life') flow = -balance / Math.max(1, 100 - (currentAge + Math.ceil((month + 1) / 12))) / frequency;
       if (flow < 0) { const paid = Math.min(balance, -flow); balance -= paid; totalWithdrawals += paid; if (paid + 1e-8 < -flow) survived = false; }
       else { balance += flow; totalContributions += flow; }
     }
@@ -99,7 +100,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const suggestedStart = Math.max(0, Math.round(initialPortfolioValue || 0));
   const [initialAmount, setInitialAmount] = useState(String(suggestedStart));
   const [cashflow, setCashflow] = useState('45000');
-  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage'>('withdrawal');
+  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage' | 'life'>('withdrawal');
   const [frequency, setFrequency] = useState('4');
   const [years, setYears] = useState('30');
   const [runs, setRuns] = useState('5000');
@@ -118,6 +119,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [sequenceStress, setSequenceStress] = useState('0');
   const [blockYears, setBlockYears] = useState('1');
   const [withdrawalPct, setWithdrawalPct] = useState('4');
+  const [currentAge, setCurrentAge] = useState('40');
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [historyStatus, setHistoryStatus] = useState('Loading saved market history…');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -177,7 +179,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
       const sj = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[1] - mj) ** 2, 0));
       return si > 0 && sj > 0 ? clamp(cov / (si * sj), -.95, .95) : 0;
     }));
-    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, Number(sequenceStress) || 0, Number(blockYears) || 1)));
+    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, clamp(Number(currentAge) || 40, 18, 99), Number(sequenceStress) || 0, Number(blockYears) || 1)));
   };
 
   const stats = useMemo(() => {
@@ -236,7 +238,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Horizon (years)<input type="number" min="1" max="60" value={years} onChange={e => setYears(e.target.value)} /></label>
           <label>{flowType === 'contribution' ? 'Periodic contribution' : 'Periodic withdrawal'}<input type="number" min="0" step="100" value={cashflow} onChange={e => setCashflow(e.target.value)} /></label>
           <label>Cashflow frequency<select value={frequency} onChange={e => setFrequency(e.target.value)}><option value="1">Annually</option><option value="2">Semi-annually</option><option value="4">Quarterly</option><option value="12">Monthly</option></select></label>
-          <label>Cashflow type<select value={flowType} onChange={e => setFlowType(e.target.value as 'contribution' | 'withdrawal' | 'percentage')}><option value="contribution">Contributions</option><option value="withdrawal">Withdrawals</option><option value="percentage">Fixed percentage withdrawals</option></select></label>
+          <label>Cashflow type<select value={flowType} onChange={e => setFlowType(e.target.value as 'contribution' | 'withdrawal' | 'percentage' | 'life')}><option value="contribution">Contributions</option><option value="withdrawal">Withdrawals</option><option value="percentage">Fixed percentage withdrawals</option><option value="life">Life-expectancy withdrawals</option></select></label>
           <label>Simulation paths<input type="number" min="100" max="20000" step="100" value={runs} onChange={e => setRuns(e.target.value)} /></label>
           <label>Expected inflation (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
           {model === 'historical' && <label>Bootstrap block length (years)<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="1">1 year (single-year bootstrap)</option><option value="2">2 years</option><option value="3">3 years</option><option value="5">5 years</option></select></label>}
@@ -245,6 +247,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" value={df} onChange={e => setDf(e.target.value)} /></label>}
           <label>Worst return years first<select value={sequenceStress} onChange={e => setSequenceStress(e.target.value)}><option value="0">Off</option>{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1} year(s)</option>)}</select></label>
           {flowType === 'percentage' && <label>Annual withdrawal (%)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>}
+          {flowType === 'life' && <label>Current age<input type="number" min="18" max="99" value={currentAge} onChange={e => setCurrentAge(e.target.value)} /></label>}
           <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust cashflows</span></label>
         </div>
         <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Saved tickers are matched to local market history.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
