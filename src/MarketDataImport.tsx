@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { saveInstrument, saveListing, saveMarketPrices } from "./data/database";
+import { getMarketPrices, saveInstrument, saveListing, saveMarketPrices } from "./data/database";
 import type { AssetType } from "./data/models";
 
 const MARKET_DATA_API_URL = "https://wealth-os-market-data.onrender.com";
-const PERIOD = "1y";
+const SYMBOL_MAP_KEY = "wealth-os-market-data-symbol-mappings";
 
 type PortfolioAsset = {
   id: string;
@@ -58,18 +58,43 @@ function inferAssetType(category: string): AssetType {
   return "etf";
 }
 
-function yahooSymbolFor(ticker: string): string | undefined {
+function yahooSymbolFor(
+  ticker: string,
+  customSymbols: Record<string, string> = {},
+): string | undefined {
   const normalized = ticker.trim().toUpperCase();
+  const custom = customSymbols[normalized]?.trim().toUpperCase();
+  if (custom) return custom;
   if (!normalized || normalized === "OTHER" || normalized === "EUR" || normalized === "CASH") {
     return undefined;
   }
   return SYMBOLS[normalized] ?? normalized;
 }
 
-async function fetchHistory(symbol: string): Promise<YahooHistoryResponse> {
+function readSymbolMappings(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(SYMBOL_MAP_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([key, value]) => typeof key === "string" && typeof value === "string" && value.trim() !== "",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+async function fetchHistory(symbol: string, startDate?: string): Promise<YahooHistoryResponse> {
   const url = new URL("/api/history", MARKET_DATA_API_URL);
   url.searchParams.set("symbol", symbol);
-  url.searchParams.set("period", PERIOD);
+  if (startDate) {
+    url.searchParams.set("start", startDate);
+  } else {
+    url.searchParams.set("period", "max");
+  }
 
   const response = await fetch(url.toString(), {
     headers: { Accept: "application/json" },
@@ -162,6 +187,7 @@ export default function MarketDataImport({
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [customSymbols, setCustomSymbols] = useState<Record<string, string>>(readSymbolMappings);
   const [lastSync, setLastSync] = useState(() => {
     try {
       return localStorage.getItem("wealth-os-market-data-last-sync") ?? "";
@@ -182,14 +208,21 @@ export default function MarketDataImport({
 
     try {
       for (const asset of assets) {
-        const symbol = yahooSymbolFor(asset.ticker);
+        const symbol = yahooSymbolFor(asset.ticker, customSymbols);
         if (!symbol) {
           skipped.push(asset.ticker);
           continue;
         }
 
         try {
-          const data = await fetchHistory(symbol);
+          const listingId = "listing_yahoo_" + safeId(symbol);
+          const existingPrices = await getMarketPrices(listingId);
+          const lastStoredDate = existingPrices.length > 0
+            ? existingPrices[existingPrices.length - 1].date
+            : undefined;
+          // No start date means first import: download all history available from Yahoo Finance.
+          // Later runs overlap the latest saved date so corrections are refreshed and duplicate records replaced.
+          const data = await fetchHistory(symbol, lastStoredDate);
           const count = await saveHistory(asset, symbol, data);
           updated += 1;
           totalPrices += count;
@@ -219,7 +252,7 @@ export default function MarketDataImport({
         ? ` Skipped assets without a market symbol: ${skipped.join(", ")}.`
         : "";
       setMessage(
-        `Updated ${updated} of ${assets.length} portfolio assets and saved ${totalPrices.toLocaleString()} daily price records.${skippedText}`,
+        `Updated ${updated} of ${assets.length} portfolio assets and processed ${totalPrices.toLocaleString()} daily price records. First imports download all history available from Yahoo Finance; later pulls refresh from the latest saved date.${skippedText}`,
       );
 
       if (failures.length > 0) {
@@ -243,9 +276,7 @@ export default function MarketDataImport({
       <section className="panel" style={{ padding: 22 }}>
         <h2 style={{ marginTop: 0 }}>Market Data</h2>
         <p style={{ color: "var(--muted)", lineHeight: 1.7 }}>
-          Pull the latest available market data for your portfolio. Wealth OS
-          downloads daily price history automatically and saves it locally in
-          this browser. Existing records are preserved if a download fails.
+          Pull daily market data for your portfolio. The first import downloads all history available from Yahoo Finance; later pulls fetch only data from the latest saved date, refreshing overlapping records. Prices are saved locally in this browser, and existing records are preserved if a download fails.
         </p>
 
         <button
@@ -261,10 +292,53 @@ export default function MarketDataImport({
           <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 6 }}>Last successful synchronization</div>
           <strong>{lastSync ? new Date(lastSync).toLocaleString("en-GB") : "Not synchronized yet"}</strong>
           <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 10 }}>
-            {assets.length} portfolio assets detected · Daily history · Yahoo Finance via yfinance
+            {assets.length} portfolio assets detected · Full available history on first import · Yahoo Finance via yfinance
           </div>
         </div>
 
+
+        {assets.some((asset) => !yahooSymbolFor(asset.ticker, customSymbols)) && (
+          <div style={{ marginTop: 18, padding: 14, border: "1px solid var(--border)", borderRadius: 10 }}>
+            <h3 style={{ marginTop: 0 }}>Unmapped Assets</h3>
+            <p style={{ color: "var(--muted)", lineHeight: 1.7 }}>
+              Generic labels such as OTHER do not identify a tradable security. Enter the real Yahoo Finance symbol for each unmapped asset to include it in market data imports.
+            </p>
+            {assets.filter((asset) => !yahooSymbolFor(asset.ticker, customSymbols)).map((asset) => (
+              <label key={asset.id} style={{ display: "grid", gap: 6, marginTop: 12 }}>
+                <span>{asset.name} ({asset.ticker})</span>
+                <input
+                  value={customSymbols[asset.ticker.toUpperCase()] ?? ""}
+                  onChange={(event) => setCustomSymbols((current) => ({
+                    ...current,
+                    [asset.ticker.toUpperCase()]: event.target.value.toUpperCase(),
+                  }))}
+                  placeholder="e.g. AAPL, VWCE.DE, or BTC-USD"
+                  maxLength={32}
+                />
+              </label>
+            ))}
+            <button
+              className="secondary-button"
+              style={{ marginTop: 12 }}
+              onClick={() => {
+                const cleaned = Object.fromEntries(
+                  Object.entries(customSymbols)
+                    .map(([key, value]) => [key.trim().toUpperCase(), value.trim().toUpperCase()])
+                    .filter(([, value]) => value !== ""),
+                ) as Record<string, string>;
+                setCustomSymbols(cleaned);
+                try {
+                  localStorage.setItem(SYMBOL_MAP_KEY, JSON.stringify(cleaned));
+                  setMessage("Market symbol mappings saved in this browser. Pull Market Data to import the mapped assets.");
+                } catch {
+                  setError("The symbol mappings could not be saved in this browser.");
+                }
+              }}
+            >
+              Save Symbol Mappings
+            </button>
+          </div>
+        )}
         {message && (
           <div role="status" style={{ whiteSpace: "pre-line", marginTop: 14, padding: 12, borderRadius: 8, background: "rgba(54,201,165,.12)", color: "#36c9a5" }}>
             {message}
