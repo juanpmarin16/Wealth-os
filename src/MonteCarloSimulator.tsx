@@ -128,9 +128,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
                 .sort((a, b) => a.date.localeCompare(b.date))
             : [];
           let remoteCurrency = '';
-          // The durable PostgreSQL archive is the source of truth when this browser's
-          // IndexedDB cache is empty, stale, or was cleared on another device.
-          if (rows.length < 12 && symbol) {
+          // Compare the local cache with the durable archive on every load. A cache can
+          // contain hundreds of daily rows yet still cover too few complete months or
+          // have a shorter history than PostgreSQL.
+          if (symbol) {
             let remotePrices: any[] = [];
             try {
               const savedResponse = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
@@ -157,7 +158,11 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
                 adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close,
               }))
               .sort((a: any, b: any) => a.date.localeCompare(b.date));
-            if (normalizedRemote.length > rows.length) rows = normalizedRemote as typeof rows;
+            const localMonthCoverage = new Set(rows.map(point => point.date.slice(0, 7))).size;
+            const remoteMonthCoverage = new Set(normalizedRemote.map(point => point.date.slice(0, 7))).size;
+            if (remoteMonthCoverage > localMonthCoverage || normalizedRemote.length > rows.length) {
+              rows = normalizedRemote as typeof rows;
+            }
             remoteCurrency ||= String(remotePrices.find((point: any) => point.currency)?.currency || '').toUpperCase();
           }
           const instrument = listing ? byInstrument.get(listing.instrumentId) : undefined;
