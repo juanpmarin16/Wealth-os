@@ -106,19 +106,68 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         ]);
         const byInstrument = new Map(instruments.map(item => [item.id, item]));
         const normalize = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-        const matched = assets.map(asset => {
-          const symbol = asset.symbol?.trim() || '';
-          const listing = listings.find(item => symbol && normalize(item.symbol) === normalize(symbol))
+        const symbolMappings = (() => {
+          try {
+            const raw = localStorage.getItem('wealth-os-market-data-symbol-mappings');
+            const parsed = raw ? JSON.parse(raw) : {};
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+          } catch { return {}; }
+        })();
+        const defaultSymbols: Record<string, string> = {
+          VGWL: 'VGWL.DE', EQQQ: 'EQQQ.DE', BTC: 'BTC-USD', LDGL: 'LDGL.L',
+        };
+        const matched = await Promise.all(assets.map(async asset => {
+          const symbolFromAsset = asset.symbol?.trim() || '';
+          const listing = listings.find(item => symbolFromAsset && normalize(item.symbol) === normalize(symbolFromAsset))
             || listings.find(item => normalize(item.symbol) === normalize(asset.ticker))
             || listings.find(item => normalize(byInstrument.get(item.instrumentId)?.name || '') === normalize(asset.name));
-          if (!listing) throw new Error(`No saved market-data listing matches ${asset.ticker || asset.name}. Open Market Data and import this asset first.`);
-          const instrument = byInstrument.get(listing.instrumentId);
-          const currency = (listing.quoteCurrency || instrument?.baseCurrency || '').toUpperCase();
+          const symbol = listing?.symbol || symbolFromAsset
+            || symbolMappings[asset.ticker.toUpperCase()] || defaultSymbols[asset.ticker.toUpperCase()] || asset.ticker;
+          let rows = listing
+            ? prices.filter(price => price.listingId === listing.id && price.close > 0)
+                .sort((a, b) => a.date.localeCompare(b.date))
+            : [];
+          let remoteCurrency = '';
+          // The durable PostgreSQL archive is the source of truth when this browser's
+          // IndexedDB cache is empty, stale, or was cleared on another device.
+          if (rows.length < 12 && symbol) {
+            let remotePrices: any[] = [];
+            try {
+              const savedResponse = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
+              const savedPayload = await savedResponse.json().catch(() => null);
+              if (savedResponse.ok && Array.isArray(savedPayload?.prices)) {
+                remotePrices = savedPayload.prices;
+              }
+            } catch { /* Try the live history endpoint below. */ }
+            if (remotePrices.length < 12) {
+              try {
+                const historyResponse = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
+                const historyPayload = await historyResponse.json().catch(() => null);
+                if (historyResponse.ok && Array.isArray(historyPayload?.prices) && historyPayload.prices.length > remotePrices.length) {
+                  remotePrices = historyPayload.prices;
+                  remoteCurrency = String(historyPayload.currency || '').toUpperCase();
+                }
+              } catch { /* Keep any durable archive rows already retrieved. */ }
+            }
+            const normalizedRemote = remotePrices
+              .filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0)
+              .map((point: any) => ({
+                date: point.date,
+                close: point.close,
+                adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close,
+              }))
+              .sort((a: any, b: any) => a.date.localeCompare(b.date));
+            if (normalizedRemote.length > rows.length) rows = normalizedRemote as typeof rows;
+            remoteCurrency ||= String(remotePrices.find((point: any) => point.currency)?.currency || '').toUpperCase();
+          }
+          const instrument = listing ? byInstrument.get(listing.instrumentId) : undefined;
+          const currency = (listing?.quoteCurrency || instrument?.baseCurrency || remoteCurrency || '').toUpperCase();
+          if (!symbol || !rows.length) {
+            throw new Error(`No saved or archived market history was found for ${asset.ticker || asset.name} (${symbol || 'no market symbol'}). Open Market Data, check its symbol mapping, and pull the full price history.`);
+          }
           if (!currency) throw new Error(`The quote currency for ${asset.ticker} is unknown. Historical returns cannot be converted reliably to EUR.`);
-          const rows = prices.filter(price => price.listingId === listing.id && price.close > 0)
-            .sort((a, b) => a.date.localeCompare(b.date));
           return { asset, listing, currency, rows };
-        });
+        }));
         const foreignCurrencies = [...new Set(matched.map(item => item.currency).filter(currency => currency !== 'EUR'))];
         const fxMap = new Map<string, FxPoint[]>();
         for (const currency of foreignCurrencies) {
@@ -146,7 +195,9 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           for (const [period, point] of rawMonthly) {
             const [year, month] = period.split('-').map(Number);
             const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
-            const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], monthEnd);
+            // Convert the month-end adjusted close using the FX quote available
+            // on that actual trading date, not a later calendar month-end date.
+            const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], point.date);
             if (!fx || fx <= 0) continue;
             monthly.set(period, point.value / fx);
           }
@@ -166,9 +217,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         if (!cancelled) {
           setHistory(rows);
           const currencyText = foreignCurrencies.length ? ` FX-converted to EUR (${foreignCurrencies.join(', ')}).` : ' All assets are already quoted in EUR.';
+          const coverage = matched.map(item => `${item.asset.ticker}: ${item.rows.length.toLocaleString('en-GB')} daily prices`).join(' · ');
           setHistoryStatus(rows.length
-            ? `${rows.length} complete, consecutive monthly observations loaded from adjusted prices.${currencyText}`
-            : 'No complete consecutive monthly observations are available for every selected asset. Historical and statistical models are disabled until sufficient data is available.');
+            ? `${rows.length} complete, consecutive monthly observations loaded from adjusted prices. ${coverage}.${currencyText}`
+            : `Only ${rows.length} complete monthly observations could be aligned across all selected assets. ${coverage}. Historical and statistical models require at least 12 complete months. Check that all assets have overlapping price history and that FX data covers the same dates.${currencyText}`);
         }
       } catch (cause) {
         if (!cancelled) {
