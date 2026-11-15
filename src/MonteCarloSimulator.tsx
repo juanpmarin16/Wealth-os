@@ -193,9 +193,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           }
           const monthly = new Map<string, number>();
           for (const [period, point] of rawMonthly) {
-            const [year, month] = period.split('-').map(Number);
-            const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
-            // Convert the month-end adjusted close using the FX quote available
+            // Convert the monthly adjusted close using the FX quote available
             // on that actual trading date, not a later calendar month-end date.
             const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], point.date);
             if (!fx || fx <= 0) continue;
