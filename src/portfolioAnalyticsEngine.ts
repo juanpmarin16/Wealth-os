@@ -26,7 +26,7 @@ export function quantile(values: number[], probability: number): number | null {
 export function alignDailyAssetReturns(series: AssetPriceSeries[], maxStaleDays = 5): AlignedReturnRow[] {
   if (!series.length || series.some(item => !item.prices.length)) return [];
   const maps = series.map(item => new Map(item.prices
-    .filter(point => Number.isFinite(point.value) && point.value > 0 && /^\\d{4}-\\d{2}-\\d{2}$/.test(point.date))
+    .filter(point => Number.isFinite(point.value) && point.value > 0 && /^(\d{4})-(\d{2})-(\d{2})$/.test(point.date))
     .sort((a, b) => a.date.localeCompare(b.date))
     .map(point => [point.date, point.value])));
   const dates = [...new Set(maps.flatMap(map => [...map.keys()]))].sort();
