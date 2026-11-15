@@ -33,7 +33,7 @@ async function loadFxHistory(currency: string): Promise<FxPoint[]> {
   const savedPayload = await saved.json().catch(() => null);
   if (saved.ok && Array.isArray(savedPayload?.prices) && savedPayload.prices.length) {
     return savedPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0)
-      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
   }
   const response = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
   const payload = await response.json().catch(() => null);
@@ -146,7 +146,7 @@ export default function PortfolioWorkspace() {
         const payload = await response.json();
         if (!response.ok) throw new Error(`${asset.ticker}: ${payload?.detail || response.statusText}`);
         const prices = Array.isArray(payload.prices)
-          ? payload.prices.filter((price: Price) => price && typeof price.date === 'string' && Number.isFinite(price.close) && price.close > 0)
+          ? payload.prices.filter((price: Price) => price && typeof price.date === 'string' && Number.isFinite(price.close) && price.close > 0).sort((a: Price, b: Price) => a.date.localeCompare(b.date))
           : [];
         if (prices.length < 2) throw new Error(`${asset.ticker}: fewer than two valid saved prices were found for ${symbol}.`);
         const currencies = [...new Set(prices.map((price: Price) => price.currency).filter(Boolean))] as string[];
