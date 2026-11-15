@@ -170,8 +170,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             .map(rate => ({ date: rate.date, value: 1 / rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
           const local = pair.length ? pair : inverse;
           let remote: FxPoint[] = [];
-          try { remote = await loadFxHistory(currency); }
-          catch (cause) { if (!local.length) throw cause; }
+          if (!local.length) remote = await loadFxHistory(currency);
           const merged = new Map<string, number>();
           [...remote, ...local].forEach(point => merged.set(point.date, point.value));
           fxMap.set(currency, [...merged.entries()].map(([date, value]) => ({ date, value })).sort((a, b) => a.date.localeCompare(b.date)));
