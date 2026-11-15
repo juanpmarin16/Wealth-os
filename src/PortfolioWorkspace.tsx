@@ -38,13 +38,13 @@ async function loadFxHistory(currency: string): Promise<FxPoint[]> {
   const response = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
   const payload = await response.json().catch(() => null);
   if (!response.ok || !Array.isArray(payload?.prices) || !payload.prices.length) throw new Error(`Historical EUR/${currency} FX rates are unavailable. Cannot calculate a reliable EUR portfolio return.`);
-  const prices = payload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0);
+  const prices = payload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0).sort((a: any, b: any) => a.date.localeCompare(b.date));
   const persist = await fetch(`${API}/api/saved-prices`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ symbol, currency: payload.currency || currency, prices }),
   });
   if (!persist.ok) throw new Error(`Could not archive historical EUR/${currency} FX rates.`);
-  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
 }
 function latestFxRate(points: FxPoint[], date: string): number | null {
   let low = 0, high = points.length - 1, found = -1;
