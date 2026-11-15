@@ -94,7 +94,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [historyStatus, setHistoryStatus] = useState('Loading saved market history…');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
 
-  const assetHistoryKey = assets.map(asset => [asset.ticker, asset.symbol || '', asset.name].join('|')).join('||');
+  const assetHistoryKey = assets.map(asset => [asset.ticker, asset.symbol || '', asset.proxyTicker || '', asset.name].join('|')).join('||');
   useEffect(() => {
     let cancelled = false;
     async function loadHistory() {
@@ -372,7 +372,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
 
 
   const updateAsset = (index: number, field: 'name' | 'ticker' | 'proxyTicker' | 'weight' | 'mean' | 'vol', value: string) => {
-    setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' || field === 'ticker' || field === 'proxyTicker' ? value.toUpperCase() : Number(value) || 0 } : a));
+    setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' ? value : value.toUpperCase() : Number(value) || 0 } : a));
   };
   const addAsset = () => { if (assets.length < 12) setAssets(prev => [...prev, { name: `Asset ${prev.length + 1}`, ticker: '', proxyTicker: '', weight: 0, mean: 5, vol: 15 }]); };
   const chart = (p10: number[], p50: number[], p90: number[]) => {
