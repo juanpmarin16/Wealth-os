@@ -32,6 +32,7 @@ type YahooHistoryResponse = {
 
 type MarketDataImportProps = {
   assets: PortfolioAsset[];
+  compact?: boolean;
   onPricesImported?: (symbol: string, latestPrice: number, currency: string) => void | Promise<void>;
 };
 
@@ -196,6 +197,7 @@ async function saveHistory(
 
 export default function MarketDataImport({
   assets,
+  compact = false,
   onPricesImported,
 }: MarketDataImportProps) {
   const [running, setRunning] = useState(false);
@@ -235,7 +237,7 @@ export default function MarketDataImport({
           let existingPrices = await getMarketPrices(listingId);
 
           // Rehydrate an empty browser cache from the durable PostgreSQL archive.
-          if (existingPrices.length === 0) {
+          {
             try {
               const savedResponse = await fetch(
                 new URL(`/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, MARKET_DATA_API_URL).toString(),
@@ -271,14 +273,9 @@ export default function MarketDataImport({
           const lastStoredDate = existingPrices.length > 0
             ? existingPrices[existingPrices.length - 1].date
             : undefined;
-          const fullHistoryAlreadyImported = fullHistoryListings.has(listingId);
-          // Existing one-year records are not proof that the complete history was imported.
-          // Until a full-history import succeeds, request max history and backfill older dates.
-          // After that, overlap the latest saved date to refresh corrections without duplicating records.
-          const data = await fetchHistory(
-            symbol,
-            fullHistoryAlreadyImported ? lastStoredDate : undefined,
-          );
+          // The archive is the source of truth. Always update from its latest date;
+          // first-time imports (no saved date) still backfill the available full history.
+          const data = await fetchHistory(symbol, lastStoredDate);
           const count = await saveHistory(asset, symbol, data);
           try {
             const durableResponse = await fetch(new URL("/api/saved-prices", MARKET_DATA_API_URL).toString(), {
@@ -358,6 +355,18 @@ export default function MarketDataImport({
     } finally {
       setRunning(false);
     }
+  }
+
+  if (compact) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button className="button button-primary" onClick={pullMarketData} disabled={running || assets.length === 0}>
+          {running ? "Updating…" : "↻ Update Market Data"}
+        </button>
+        {message && <span role="status" style={{ color: "var(--muted)", fontSize: 12 }}>{message}</span>}
+        {error && <span role="alert" style={{ color: "#e77969", fontSize: 12 }}>Update failed — open Market Data for details</span>}
+      </div>
+    );
   }
 
   return (
