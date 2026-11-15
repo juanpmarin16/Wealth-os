@@ -312,7 +312,10 @@ export default function MarketDataImport({
           updated += 1;
           totalPrices += count;
           const quoteCurrency = (data.currency || "").trim().toUpperCase();
-          if (quoteCurrency && quoteCurrency !== "EUR") importedCurrencies.add(quoteCurrency);
+          if (quoteCurrency && quoteCurrency !== "EUR") {
+            // GBX is pence sterling, not an independent FX currency.
+            importedCurrencies.add(quoteCurrency === "GBX" ? "GBP" : quoteCurrency);
+          }
 
           const latest = data.prices.reduce((a, b) =>
             a.date > b.date ? a : b,
