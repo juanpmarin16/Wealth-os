@@ -31,22 +31,23 @@ const SYMBOLS: Record<string, string> = { VGWL: 'VGWL.DE', VWCE: 'VWCE.DE', VWRL
 
 async function loadFxHistory(currency: string): Promise<FxPoint[]> {
   const symbol = `EUR${currency}=X`;
-  const saved = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
-  const savedPayload = await saved.json().catch(() => null);
-  if (saved.ok && Array.isArray(savedPayload?.prices) && savedPayload.prices.length) {
-    return savedPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0)
-      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, {
+      headers: { Accept: 'application/json' }, signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !Array.isArray(payload?.prices) || !payload.prices.length) {
+      throw new Error(`Saved FX history for EUR/${currency} is unavailable. Use Update Market Data to import it.`);
+    }
+    return payload.prices
+      .filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0)
+      .map((point: any) => ({ date: point.date, value: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close }))
+      .sort((x: FxPoint, y: FxPoint) => x.date.localeCompare(y.date));
+  } finally {
+    window.clearTimeout(timeout);
   }
-  const response = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || !Array.isArray(payload?.prices) || !payload.prices.length) throw new Error(`Historical EUR/${currency} FX rates are unavailable. Cannot calculate a reliable EUR portfolio return.`);
-  const prices = payload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0).sort((a: any, b: any) => a.date.localeCompare(b.date));
-  const persist = await fetch(`${API}/api/saved-prices`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ symbol, currency: payload.currency || currency, prices }),
-  });
-  if (!persist.ok) throw new Error(`Could not archive historical EUR/${currency} FX rates.`);
-  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
 }
 function latestFxRate(points: FxPoint[], date: string): number | null {
   let low = 0, high = points.length - 1, found = -1;
