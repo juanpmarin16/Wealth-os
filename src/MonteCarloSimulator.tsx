@@ -23,39 +23,23 @@ function monthNumber(value: string) {
 type FxPoint = { date: string; value: number };
 async function loadFxHistory(currency: string): Promise<FxPoint[]> {
   const symbol = `EUR${currency}=X`;
-  const headers = { Accept: 'application/json' };
-  const [savedResult, historyResult] = await Promise.allSettled([
-    fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers }),
-    fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers }),
-  ]);
-  const savedPayload = savedResult.status === 'fulfilled'
-    ? await savedResult.value.json().catch(() => null) : null;
-  const historyPayload = historyResult.status === 'fulfilled'
-    ? await historyResult.value.json().catch(() => null) : null;
-  const candidates = [
-    ...(Array.isArray(savedPayload?.prices) ? savedPayload.prices : []),
-    ...(historyResult.status === 'fulfilled' && historyResult.value.ok && Array.isArray(historyPayload?.prices) ? historyPayload.prices : []),
-  ];
-  const byDate = new Map<string, FxPoint>();
-  for (const point of candidates) {
-    if (typeof point.date !== 'string' || !Number.isFinite(point.close) || point.close <= 0) continue;
-    const value = Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close;
-    byDate.set(point.date, { date: point.date, value });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, {
+      headers: { Accept: 'application/json' }, signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !Array.isArray(payload?.prices) || !payload.prices.length) {
+      throw new Error(`Saved FX history for EUR/${currency} is unavailable. Use Update Market Data to import it.`);
+    }
+    return payload.prices
+      .filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0)
+      .map((point: any) => ({ date: point.date, value: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close }))
+      .sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
+  } finally {
+    window.clearTimeout(timeout);
   }
-  const merged = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-  if (!merged.length) {
-    throw new Error(`Historical FX data for EUR/${currency} (${symbol}) is unavailable from both the saved archive and full-history endpoint. Import this FX pair in Market Data before using EUR-based historical simulation.`);
-  }
-  // A non-empty saved archive is not proof of sufficient coverage. Always compare
-  // it with period=max and use the union so older FX observations are not discarded.
-  if (historyResult.status === 'fulfilled' && historyResult.value.ok && Array.isArray(historyPayload?.prices) && historyPayload.prices.length) {
-    fetch(`${API}/api/saved-prices`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ symbol, currency: historyPayload.currency || currency, prices: historyPayload.prices }),
-    }).catch(() => undefined);
-  }
-  return merged;
 }
 function latestFxRate(points: FxPoint[], date: string): number | null {
   let low = 0, high = points.length - 1, found = -1;
@@ -143,46 +127,31 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
                 .sort((a, b) => a.date.localeCompare(b.date))
             : [];
           let remoteCurrency = '';
-          // Compare the local cache with the durable archive on every load. A cache can
-          // contain hundreds of daily rows yet still cover too few complete months or
-          // have a shorter history than PostgreSQL.
-          if (symbol) {
-            let savedPrices: any[] = [];
-            let fullHistoryPrices: any[] = [];
-            let fullHistoryCurrency = '';
-            const headers = { Accept: 'application/json' };
-            const [savedResult, historyResult] = await Promise.allSettled([
-              fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers }),
-              fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers }),
-            ]);
-            if (savedResult.status === 'fulfilled' && savedResult.value.ok) {
-              const payload = await savedResult.value.json().catch(() => null);
-              if (Array.isArray(payload?.prices)) savedPrices = payload.prices;
-            }
-            if (historyResult.status === 'fulfilled' && historyResult.value.ok) {
-              const payload = await historyResult.value.json().catch(() => null);
-              if (Array.isArray(payload?.prices)) fullHistoryPrices = payload.prices;
-              fullHistoryCurrency = String(payload?.currency || '').toUpperCase();
-            }
-            // Merge local IndexedDB, PostgreSQL and provider full history by date.
-            // Row count alone is misleading: a short recent cache may contain more
-            // daily observations than a sparse but much longer historical series.
-            const mergedByDate = new Map<string, any>();
-            for (const point of rows) mergedByDate.set(point.date, point);
-            for (const point of [...savedPrices, ...fullHistoryPrices]) {
-              if (typeof point.date !== 'string' || !Number.isFinite(point.close) || point.close <= 0) continue;
-              const existing = mergedByDate.get(point.date);
-              mergedByDate.set(point.date, {
-                date: point.date,
-                close: point.close,
-                adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0
-                  ? point.adjustedClose
-                  : (existing?.adjustedClose > 0 ? existing.adjustedClose : point.close),
+          // Use the browser's IndexedDB cache first. PostgreSQL is only a fallback
+          // when this device has no local history; never request provider full history
+          // from the Monte Carlo screen.
+          if (symbol && rows.length === 0) {
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), 12000);
+            try {
+              const response = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, {
+                headers: { Accept: 'application/json' }, signal: controller.signal,
               });
+              const payload = await response.json().catch(() => null);
+              if (response.ok && Array.isArray(payload?.prices)) {
+                rows = payload.prices
+                  .filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0)
+                  .map((point: any) => ({
+                    date: point.date,
+                    close: point.close,
+                    adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close,
+                  }))
+                  .sort((a: any, b: any) => a.date.localeCompare(b.date)) as typeof rows;
+                remoteCurrency = String(payload?.prices.find((point: any) => point.currency)?.currency || '').toUpperCase();
+              }
+            } finally {
+              window.clearTimeout(timeout);
             }
-            rows = [...mergedByDate.values()].sort((a, b) => a.date.localeCompare(b.date)) as typeof rows;
-            remoteCurrency = fullHistoryCurrency
-              || String(savedPrices.find((point: any) => point.currency)?.currency || '').toUpperCase();
           }
           const instrument = listing ? byInstrument.get(listing.instrumentId) : undefined;
           const currency = (listing?.quoteCurrency || instrument?.baseCurrency || remoteCurrency || '').toUpperCase();
