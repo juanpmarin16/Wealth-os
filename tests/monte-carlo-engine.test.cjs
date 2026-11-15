@@ -72,8 +72,24 @@ test('cashflow-adjusted maximum drawdown is not distorted by contributions', () 
 test('historical bootstrap reports the actual number of complete observations available', () => {
   assert.throws(
     () => runMonteCarlo(config({ model: 'historical' }), [asset()], flatHistory(0, 8), 1),
-    /requires at least 12 complete monthly observations.*only 8 are currently available/,
+    /requires at least 10 complete monthly observations.*only 8 are currently available/,
   );
+});
+
+
+test('historical bootstrap supports a short 10-month sample using one-month blocks', () => {
+  const history = flatHistory(0.01, 10).map((row, index) => ({
+    ...row,
+    returns: [index % 2 === 0 ? 0.02 : -0.01],
+  }));
+  const results = runMonteCarlo(
+    config({ model: 'historical', blockYears: 1 / 12, years: 2, seed: 321 }),
+    [asset()],
+    history,
+    100,
+  );
+  assert.equal(results.length, 100);
+  assert.ok(results.every(row => Number.isFinite(row.ending) && row.ending > 0));
 });
 
 test('historical bootstrap rejects missing asset observations instead of inventing returns', () => {
