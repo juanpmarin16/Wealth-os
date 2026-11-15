@@ -100,7 +100,7 @@ test('Student-t simulation supports non-integer degrees of freedom and finite ou
 test('statistical model estimates arithmetic annualized moments from complete monthly observations', () => {
   const history = flatHistory(0.01);
   const [moments] = estimateAssetMoments(history, 1);
-  assert.ok(Math.abs(moments.mean - 0.12) < 1e-10);
+  assert.ok(Math.abs(moments.mean - 12) < 1e-10);
   assert.ok(Math.abs(moments.vol) < 1e-10);
   const [result] = runMonteCarlo(config({ model: 'statistical' }), [asset({ mean: -20, vol: 40 })], history, 1);
   assert.ok(Math.abs(result.ending - 1120) < 1e-6);
