@@ -34,8 +34,8 @@ jobs:
 
       - name: Test Monte Carlo calculation engine
         run: |
-          npx tsc --ignoreConfig src/monteCarloEngine.ts --target ES2022 --module commonjs --outDir /tmp/wealth-os-engine --skipLibCheck
-          node --test tests/monte-carlo-engine.test.cjs
+          npx tsc --ignoreConfig src/monteCarloEngine.ts src/portfolioAnalyticsEngine.ts --target ES2022 --module commonjs --outDir /tmp/wealth-os-engine --skipLibCheck
+          node --test tests/monte-carlo-engine.test.cjs tests/portfolio-analytics-engine.test.cjs
 
       - name: Check application TypeScript
         run: npx tsc -p tsconfig.app.json --noEmit
