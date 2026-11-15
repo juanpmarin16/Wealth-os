@@ -114,3 +114,9 @@ test('correlation estimation returns a symmetric matrix with unit diagonal', () 
   assert.ok(Math.abs(matrix[0][1] - matrix[1][0]) < 1e-12);
   assert.ok(matrix[0][1] > 0.99);
 });
+
+test('Student-t model compounds to the exact annual expected return when volatility is zero', () => {
+  const [result] = runMonteCarlo(config({ distribution: 'student', degreesOfFreedom: 5.5 }), [asset({ mean: 7, vol: 0 })], [], 1);
+  assert.ok(Math.abs(result.ending - 1070) < 1e-7);
+  assert.ok(Math.abs(result.annualizedReturn - 0.07) < 1e-10);
+});
