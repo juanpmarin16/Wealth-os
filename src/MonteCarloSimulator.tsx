@@ -27,7 +27,7 @@ async function loadFxHistory(currency: string): Promise<FxPoint[]> {
   const savedPayload = await savedResponse.json().catch(() => null);
   if (savedResponse.ok && Array.isArray(savedPayload?.prices) && savedPayload.prices.length) {
     return savedPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0)
-      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
   }
   const historyResponse = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
   const historyPayload = await historyResponse.json().catch(() => null);
@@ -40,7 +40,7 @@ async function loadFxHistory(currency: string): Promise<FxPoint[]> {
     body: JSON.stringify({ symbol, currency: historyPayload.currency || currency, prices }),
   });
   if (!persist.ok) throw new Error(`Could not save historical FX data for EUR/${currency} to the market archive.`);
-  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
 }
 function latestFxRate(points: FxPoint[], date: string): number | null {
   let low = 0, high = points.length - 1, found = -1;
