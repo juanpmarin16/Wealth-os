@@ -32,6 +32,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test Monte Carlo calculation engine
+        run: |
+          npx tsc src/monteCarloEngine.ts --target ES2022 --module commonjs --outDir /tmp/wealth-os-engine --skipLibCheck
+          node --test tests/monte-carlo-engine.test.cjs
+
       - name: Check application TypeScript
         run: npx tsc -p tsconfig.app.json --noEmit
 
