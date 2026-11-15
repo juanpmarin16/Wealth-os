@@ -114,6 +114,10 @@ function validateInputs(config: SimulationConfig, assets: SimulationAsset[], his
   if (config.model === 'statistical' && history.filter(row => row.returns.length === assets.length && row.returns.every(Number.isFinite)).length < 12) throw new Error('Statistical returns require at least 12 complete monthly observations.');
   if (config.distribution === 'student' && (!Number.isFinite(config.degreesOfFreedom) || config.degreesOfFreedom <= 2)) throw new Error('Student-t degrees of freedom must be greater than 2.');
   if (!Number.isFinite(config.inflationMean) || config.inflationMean <= -100 || !Number.isFinite(config.inflationVolatility) || config.inflationVolatility < 0) throw new Error('Inflation assumptions are invalid.');
+  if (!Number.isInteger(config.sequenceStressYears) || config.sequenceStressYears < 0) throw new Error('Worst-return sequence years must be a non-negative whole number.');
+  if (config.cashflowType === 'percentage' && (!Number.isFinite(config.annualWithdrawalRate) || config.annualWithdrawalRate < 0 || config.annualWithdrawalRate > 100)) throw new Error('Annual percentage withdrawal must be between 0% and 100%.');
+  if (config.cashflowType === 'life' && (!Number.isInteger(config.currentAge) || config.currentAge < 18 || config.currentAge > 99)) throw new Error('Current age must be a whole number between 18 and 99.');
+  if (!['monthly', 'annual', 'none'].includes(config.rebalancing)) throw new Error('Unknown rebalancing policy.');
 }
 
 function annualLogParameters(meanPercent: number, volatilityPercent: number): { meanLog: number; volatilityLog: number } {
