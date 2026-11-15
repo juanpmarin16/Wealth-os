@@ -158,7 +158,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             }
           }
           const instrument = listing ? byInstrument.get(listing.instrumentId) : undefined;
-          const currency = (listing?.quoteCurrency || instrument?.baseCurrency || remoteCurrency || '').toUpperCase();
+          const currency = (remoteCurrency || listing?.quoteCurrency || instrument?.baseCurrency || '').toUpperCase();
           if (!symbol || !rows.length) {
             throw new Error(`No saved or archived market history was found for ${asset.ticker || asset.name} (${symbol || 'no market symbol'}). Open Market Data, check its symbol mapping, and pull the full price history.`);
           }
