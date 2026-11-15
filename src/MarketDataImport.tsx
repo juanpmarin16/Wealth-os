@@ -32,6 +32,7 @@ type YahooHistoryResponse = {
 
 type MarketDataImportProps = {
   assets: PortfolioAsset[];
+  compact?: boolean;
   onPricesImported?: (symbol: string, latestPrice: number, currency: string) => void | Promise<void>;
 };
 
@@ -110,10 +111,19 @@ async function fetchHistory(symbol: string, startDate?: string): Promise<YahooHi
     url.searchParams.set("period", "max");
   }
 
-  const response = await fetch(url.toString(), {
-    headers: { Accept: "application/json" },
-  });
-  const payload: unknown = await response.json().catch(() => null);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 40000);
+  let response: Response;
+  let payload: unknown;
+  try {
+    response = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    payload = await response.json().catch(() => null);
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const detail =
@@ -196,6 +206,7 @@ async function saveHistory(
 
 export default function MarketDataImport({
   assets,
+  compact = false,
   onPricesImported,
 }: MarketDataImportProps) {
   const [running, setRunning] = useState(false);
@@ -219,6 +230,7 @@ export default function MarketDataImport({
     let totalPrices = 0;
     const failures: string[] = [];
     const durabilityWarnings: string[] = [];
+    const importedCurrencies = new Set<string>();
     const skipped: string[] = [];
     const fullHistoryListings = new Set(readFullHistoryListings());
 
@@ -235,7 +247,7 @@ export default function MarketDataImport({
           let existingPrices = await getMarketPrices(listingId);
 
           // Rehydrate an empty browser cache from the durable PostgreSQL archive.
-          if (existingPrices.length === 0) {
+          {
             try {
               const savedResponse = await fetch(
                 new URL(`/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, MARKET_DATA_API_URL).toString(),
@@ -271,14 +283,9 @@ export default function MarketDataImport({
           const lastStoredDate = existingPrices.length > 0
             ? existingPrices[existingPrices.length - 1].date
             : undefined;
-          const fullHistoryAlreadyImported = fullHistoryListings.has(listingId);
-          // Existing one-year records are not proof that the complete history was imported.
-          // Until a full-history import succeeds, request max history and backfill older dates.
-          // After that, overlap the latest saved date to refresh corrections without duplicating records.
-          const data = await fetchHistory(
-            symbol,
-            fullHistoryAlreadyImported ? lastStoredDate : undefined,
-          );
+          // The archive is the source of truth. Always update from its latest date;
+          // first-time imports (no saved date) still backfill the available full history.
+          const data = await fetchHistory(symbol, lastStoredDate);
           const count = await saveHistory(asset, symbol, data);
           try {
             const durableResponse = await fetch(new URL("/api/saved-prices", MARKET_DATA_API_URL).toString(), {
@@ -296,16 +303,19 @@ export default function MarketDataImport({
           } catch (cause) {
             durabilityWarnings.push(`${asset.ticker}: ${cause instanceof Error ? cause.message : "persistent storage unavailable"}`);
           }
-          if (!fullHistoryAlreadyImported) {
-            fullHistoryListings.add(listingId);
-            try {
-              localStorage.setItem(FULL_HISTORY_KEY, JSON.stringify([...fullHistoryListings]));
-            } catch {
-              // If storage is unavailable, the next run safely repeats the full-history import.
-            }
+          fullHistoryListings.add(listingId);
+          try {
+            localStorage.setItem(FULL_HISTORY_KEY, JSON.stringify([...fullHistoryListings]));
+          } catch {
+            // This is only a cache hint; PostgreSQL remains the source of truth.
           }
           updated += 1;
           totalPrices += count;
+          const quoteCurrency = (data.currency || "").trim().toUpperCase();
+          if (quoteCurrency && quoteCurrency !== "EUR") {
+            // GBX is pence sterling, not an independent FX currency.
+            importedCurrencies.add(quoteCurrency === "GBX" ? "GBP" : quoteCurrency);
+          }
 
           const latest = data.prices.reduce((a, b) =>
             a.date > b.date ? a : b,
@@ -318,6 +328,32 @@ export default function MarketDataImport({
         }
       }
 
+      // Keep the FX history required by multi-currency analytics in the same durable archive.
+      for (const currency of importedCurrencies) {
+        const fxSymbol = `EUR${currency}=X`;
+        try {
+          const savedResponse = await fetch(
+            new URL(`/api/saved-prices?symbol=${encodeURIComponent(fxSymbol)}`, MARKET_DATA_API_URL).toString(),
+            { headers: { Accept: "application/json" } },
+          );
+          const savedPayload: unknown = await savedResponse.json().catch(() => null);
+          const savedPrices = typeof savedPayload === "object" && savedPayload !== null && "prices" in savedPayload && Array.isArray(savedPayload.prices)
+            ? (savedPayload.prices as PriceRecord[])
+            : [];
+          const lastFxDate = savedPrices.reduce((latest, point) => point.date > latest ? point.date : latest, "");
+          const fxData = await fetchHistory(fxSymbol, lastFxDate || undefined);
+          const persistResponse = await fetch(new URL("/api/saved-prices", MARKET_DATA_API_URL).toString(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ symbol: fxSymbol, currency: "EUR", prices: fxData.prices }),
+          });
+          if (!persistResponse.ok) throw new Error(`Archive returned HTTP ${persistResponse.status}`);
+          totalPrices += fxData.prices.length;
+        } catch (cause) {
+          failures.push(`FX EUR/${currency}: ${cause instanceof Error ? cause.message : "FX update failed"}`);
+        }
+      }
+
       if (updated > 0) {
         const timestamp = new Date().toISOString();
         setLastSync(timestamp);
@@ -326,6 +362,10 @@ export default function MarketDataImport({
         } catch {
           // Synchronization still succeeded even if the timestamp cannot be persisted.
         }
+      }
+
+      if (updated > 0) {
+        window.dispatchEvent(new Event("wealth-os-market-data-updated"));
       }
 
       const skippedText = skipped.length
@@ -358,6 +398,18 @@ export default function MarketDataImport({
     } finally {
       setRunning(false);
     }
+  }
+
+  if (compact) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button className="button button-primary" onClick={pullMarketData} disabled={running || assets.length === 0}>
+          {running ? "Updating…" : "↻ Update Market Data"}
+        </button>
+        {message && <span role="status" style={{ color: "var(--muted)", fontSize: 12 }}>{message}</span>}
+        {error && <span role="alert" style={{ color: "#e77969", fontSize: 12 }}>Update failed — open Market Data for details</span>}
+      </div>
+    );
   }
 
   return (
