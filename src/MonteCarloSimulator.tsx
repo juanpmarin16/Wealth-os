@@ -23,24 +23,39 @@ function monthNumber(value: string) {
 type FxPoint = { date: string; value: number };
 async function loadFxHistory(currency: string): Promise<FxPoint[]> {
   const symbol = `EUR${currency}=X`;
-  const savedResponse = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
-  const savedPayload = await savedResponse.json().catch(() => null);
-  if (savedResponse.ok && Array.isArray(savedPayload?.prices) && savedPayload.prices.length) {
-    return savedPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0)
-      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
+  const headers = { Accept: 'application/json' };
+  const [savedResult, historyResult] = await Promise.allSettled([
+    fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers }),
+    fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers }),
+  ]);
+  const savedPayload = savedResult.status === 'fulfilled'
+    ? await savedResult.value.json().catch(() => null) : null;
+  const historyPayload = historyResult.status === 'fulfilled'
+    ? await historyResult.value.json().catch(() => null) : null;
+  const candidates = [
+    ...(Array.isArray(savedPayload?.prices) ? savedPayload.prices : []),
+    ...(historyResult.status === 'fulfilled' && historyResult.value.ok && Array.isArray(historyPayload?.prices) ? historyPayload.prices : []),
+  ];
+  const byDate = new Map<string, FxPoint>();
+  for (const point of candidates) {
+    if (typeof point.date !== 'string' || !Number.isFinite(point.close) || point.close <= 0) continue;
+    const value = Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close;
+    byDate.set(point.date, { date: point.date, value });
   }
-  const historyResponse = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
-  const historyPayload = await historyResponse.json().catch(() => null);
-  if (!historyResponse.ok || !Array.isArray(historyPayload?.prices) || !historyPayload.prices.length) {
-    throw new Error(`Historical FX data for EUR/${currency} is unavailable. Import ${symbol} market data before using EUR-based historical simulation.`);
+  const merged = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (!merged.length) {
+    throw new Error(`Historical FX data for EUR/${currency} (${symbol}) is unavailable from both the saved archive and full-history endpoint. Import this FX pair in Market Data before using EUR-based historical simulation.`);
   }
-  const prices = historyPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0);
-  const persist = await fetch(`${API}/api/saved-prices`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ symbol, currency: historyPayload.currency || currency, prices }),
-  });
-  if (!persist.ok) throw new Error(`Could not save historical FX data for EUR/${currency} to the market archive.`);
-  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close })).sort((a: FxPoint, b: FxPoint) => a.date.localeCompare(b.date));
+  // A non-empty saved archive is not proof of sufficient coverage. Always compare
+  // it with period=max and use the union so older FX observations are not discarded.
+  if (historyResult.status === 'fulfilled' && historyResult.value.ok && Array.isArray(historyPayload?.prices) && historyPayload.prices.length) {
+    fetch(`${API}/api/saved-prices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ symbol, currency: historyPayload.currency || currency, prices: historyPayload.prices }),
+    }).catch(() => undefined);
+  }
+  return merged;
 }
 function latestFxRate(points: FxPoint[], date: string): number | null {
   let low = 0, high = points.length - 1, found = -1;
@@ -132,38 +147,42 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           // contain hundreds of daily rows yet still cover too few complete months or
           // have a shorter history than PostgreSQL.
           if (symbol) {
-            let remotePrices: any[] = [];
-            try {
-              const savedResponse = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
-              const savedPayload = await savedResponse.json().catch(() => null);
-              if (savedResponse.ok && Array.isArray(savedPayload?.prices)) {
-                remotePrices = savedPayload.prices;
-              }
-            } catch { /* Try the live history endpoint below. */ }
-            if (remotePrices.length < 12) {
-              try {
-                const historyResponse = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
-                const historyPayload = await historyResponse.json().catch(() => null);
-                if (historyResponse.ok && Array.isArray(historyPayload?.prices) && historyPayload.prices.length > remotePrices.length) {
-                  remotePrices = historyPayload.prices;
-                  remoteCurrency = String(historyPayload.currency || '').toUpperCase();
-                }
-              } catch { /* Keep any durable archive rows already retrieved. */ }
+            let savedPrices: any[] = [];
+            let fullHistoryPrices: any[] = [];
+            let fullHistoryCurrency = '';
+            const headers = { Accept: 'application/json' };
+            const [savedResult, historyResult] = await Promise.allSettled([
+              fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers }),
+              fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers }),
+            ]);
+            if (savedResult.status === 'fulfilled' && savedResult.value.ok) {
+              const payload = await savedResult.value.json().catch(() => null);
+              if (Array.isArray(payload?.prices)) savedPrices = payload.prices;
             }
-            const normalizedRemote = remotePrices
-              .filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0)
-              .map((point: any) => ({
+            if (historyResult.status === 'fulfilled' && historyResult.value.ok) {
+              const payload = await historyResult.value.json().catch(() => null);
+              if (Array.isArray(payload?.prices)) fullHistoryPrices = payload.prices;
+              fullHistoryCurrency = String(payload?.currency || '').toUpperCase();
+            }
+            // Merge local IndexedDB, PostgreSQL and provider full history by date.
+            // Row count alone is misleading: a short recent cache may contain more
+            // daily observations than a sparse but much longer historical series.
+            const mergedByDate = new Map<string, any>();
+            for (const point of rows) mergedByDate.set(point.date, point);
+            for (const point of [...savedPrices, ...fullHistoryPrices]) {
+              if (typeof point.date !== 'string' || !Number.isFinite(point.close) || point.close <= 0) continue;
+              const existing = mergedByDate.get(point.date);
+              mergedByDate.set(point.date, {
                 date: point.date,
                 close: point.close,
-                adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close,
-              }))
-              .sort((a: any, b: any) => a.date.localeCompare(b.date));
-            const localMonthCoverage = new Set(rows.map(point => point.date.slice(0, 7))).size;
-            const remoteMonthCoverage = new Set(normalizedRemote.map(point => point.date.slice(0, 7))).size;
-            if (remoteMonthCoverage > localMonthCoverage || normalizedRemote.length > rows.length) {
-              rows = normalizedRemote as typeof rows;
+                adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0
+                  ? point.adjustedClose
+                  : (existing?.adjustedClose > 0 ? existing.adjustedClose : point.close),
+              });
             }
-            remoteCurrency ||= String(remotePrices.find((point: any) => point.currency)?.currency || '').toUpperCase();
+            rows = [...mergedByDate.values()].sort((a, b) => a.date.localeCompare(b.date)) as typeof rows;
+            remoteCurrency = fullHistoryCurrency
+              || String(savedPrices.find((point: any) => point.currency)?.currency || '').toUpperCase();
           }
           const instrument = listing ? byInstrument.get(listing.instrumentId) : undefined;
           const currency = (listing?.quoteCurrency || instrument?.baseCurrency || remoteCurrency || '').toUpperCase();
@@ -188,21 +207,25 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           [...remote, ...local].forEach(point => merged.set(point.date, point.value));
           fxMap.set(currency, [...merged.entries()].map(([date, value]) => ({ date, value })).sort((a, b) => a.date.localeCompare(b.date)));
         }
-        const monthlyMaps = matched.map(item => {
-          const rawMonthly = new Map<string, { date: string; value: number }>();
+        const assetPriceMonths = matched.map(item => {
+          const months = new Map<string, { date: string; value: number }>();
           for (const point of item.rows) {
-            rawMonthly.set(point.date.slice(0, 7), {
+            const month = point.date.slice(0, 7);
+            const existing = months.get(month);
+            if (!existing || point.date > existing.date) months.set(month, {
               date: point.date,
               value: point.adjustedClose && point.adjustedClose > 0 ? point.adjustedClose : point.close,
             });
           }
+          return months;
+        });
+        const monthlyMaps = matched.map((item, index) => {
           const monthly = new Map<string, number>();
-          for (const point of rawMonthly.values()) {
-            // Convert the monthly adjusted close using the FX quote available
-            // on that actual trading date, not a later calendar month-end date.
+          for (const [month, point] of assetPriceMonths[index]) {
+            // Use the FX quote on the asset's actual final trading date for that month.
             const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], point.date);
             if (!fx || fx <= 0) continue;
-            monthly.set(point.date.slice(0, 7), point.value / fx);
+            monthly.set(month, point.value / fx);
           }
           return monthly;
         });
@@ -220,10 +243,30 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         if (!cancelled) {
           setHistory(rows);
           const currencyText = foreignCurrencies.length ? ` FX-converted to EUR (${foreignCurrencies.join(', ')}).` : ' All assets are already quoted in EUR.';
-          const coverage = matched.map(item => `${item.asset.ticker}: ${item.rows.length.toLocaleString('en-GB')} daily prices`).join(' · ');
+          const assetCoverage = matched.map((item, index) => {
+            const months = [...assetPriceMonths[index].keys()].sort();
+            return `${item.asset.ticker}: ${item.rows.length.toLocaleString('en-GB')} daily / ${months.length} price months (${months[0] || '—'} to ${months[months.length - 1] || '—'})`;
+          }).join(' · ');
+          const fxCoverage = foreignCurrencies.map(currency => {
+            const points = fxMap.get(currency) || [];
+            const first = points[0]?.date || '—', last = points[points.length - 1]?.date || '—';
+            const monthlyFx = new Set(points.map(point => point.date.slice(0, 7))).size;
+            return `EUR/${currency}: ${points.length} daily FX quotes / ${monthlyFx} FX months (${first} to ${last})`;
+          }).join(' · ');
+          const commonPriceMonths = assetPriceMonths.length
+            ? [...assetPriceMonths[0].keys()].filter(month => assetPriceMonths.every(map => map.has(month))).sort()
+            : [];
+          const eurMonths = monthlyMaps.length
+            ? [...monthlyMaps[0].keys()].filter(month => monthlyMaps.every(map => map.has(month))).sort()
+            : [];
+          const overlapText = commonPriceMonths.length
+            ? `Raw price overlap: ${commonPriceMonths.length} months (${commonPriceMonths[0]} to ${commonPriceMonths[commonPriceMonths.length - 1]}).`
+            : 'Raw price overlap: none.';
+          const fxText = fxCoverage ? ` FX coverage: ${fxCoverage}.` : '';
+          const alignedText = `EUR-converted overlap: ${eurMonths.length} months.`;
           setHistoryStatus(rows.length
-            ? `${rows.length} complete, consecutive monthly observations loaded from adjusted prices. ${coverage}.${currencyText}`
-            : `Only ${rows.length} complete monthly observations could be aligned across all selected assets. ${coverage}. Historical and statistical models require at least 12 complete months. Check that all assets have overlapping price history and that FX data covers the same dates.${currencyText}`);
+            ? `${rows.length} complete, consecutive monthly observations loaded from adjusted prices. ${assetCoverage}. ${overlapText} ${alignedText}${fxText}${currencyText}`
+            : `Only ${rows.length} complete monthly return observations could be aligned across all selected assets. ${assetCoverage}. ${overlapText} ${alignedText}${fxText} Historical and statistical models require at least 12 consecutive complete monthly returns. Check the date intersection and missing FX quotes.${currencyText}`);
         }
       } catch (cause) {
         if (!cancelled) {
