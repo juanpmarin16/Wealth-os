@@ -243,9 +243,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             : 'Raw price overlap: none.';
           const fxText = fxCoverage ? ` FX coverage: ${fxCoverage}.` : '';
           const alignedText = `EUR-converted overlap: ${eurMonths.length} months.`;
-          setHistoryStatus(rows.length
-            ? `${rows.length} complete, consecutive monthly observations loaded from adjusted prices. ${assetCoverage}. ${overlapText} ${alignedText}${fxText}${currencyText}`
-            : `Only ${rows.length} complete monthly return observations could be aligned across all selected assets. ${assetCoverage}. ${overlapText} ${alignedText}${fxText} Historical and statistical models require at least 12 consecutive complete monthly returns. Check the date intersection and missing FX quotes.${currencyText}`);
+          const returnStatus = rows.length >= 12
+            ? `${rows.length} complete one-month returns are available for simulation.`
+            : `Only ${rows.length} complete one-month returns are available; at least 12 are required. This requires at least 13 aligned month-end price points for every selected asset. Use Update Market Data if the PostgreSQL archive is missing recent or historical records.`;
+          setHistoryStatus(`${returnStatus} ${assetCoverage}. ${overlapText} ${alignedText}${fxText}${currencyText}`);
         }
       } catch (cause) {
         if (!cancelled) {
