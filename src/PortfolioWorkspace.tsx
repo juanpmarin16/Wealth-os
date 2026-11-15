@@ -131,7 +131,7 @@ export default function PortfolioWorkspace() {
     setOptimization(candidates.sort((a,b) => b.sharpe-a.sharpe).slice(0, 20)); setDataError('');
   }
   const selectedStress = stress === '2008' ? [-.38,-.12,-.08,-.05] : stress === '2020' ? [-.34,-.25,-.18,.04] : stress === '2022' ? [-.19,-.33,-.15,-.12] : [-.15,-.1,-.05,-.02];
-  const stressImpact = assets.reduce((s,a,i) => s + weights[i] * (selectedStress[i % selectedStress.length] || 0),0);
+  const stressImpact = assets.reduce((s,_a,i) => s + weights[i] * (selectedStress[i % selectedStress.length] || 0),0);
   const historicalIndex = nav.length ? nav.map(v => v / nav[0] * 100) : [];
   const activePage = (p: Page) => setPage(p);
 
