@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { db } from './data/database';
 
 type PortfolioAsset = { name: string; ticker: string; category: string; value: number };
-type Props = { initialPortfolioValue: number; portfolioAssets: PortfolioAsset[] };
+type Props = { initialPortfolioValue: number; portfolioAssets: PortfolioAsset[]; monthlyContribution?: number; horizonYears?: number };
 type PathSummary = { ending: number; realEnding: number; survived: boolean; maxDrawdown: number; yearly: number[]; annualizedReturn: number; totalContributions: number; totalWithdrawals: number };
 type HistoryRow = { date: string; returns: number[] };
 type Model = 'historical' | 'statistical' | 'parameterized';
@@ -100,13 +100,13 @@ function Histogram({ values }: { values: number[] }) {
     <text x={pad} y={height - 7} className="mc-axis-label">{euro(min)}</text><text x={width - pad} y={height - 7} textAnchor="end" className="mc-axis-label">{euro(max)}</text>
   </svg>;
 }
-export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAssets }: Props) {
+export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAssets, monthlyContribution = 0, horizonYears = 30 }: Props) {
   const suggestedStart = Math.max(0, Math.round(initialPortfolioValue || 0));
   const [initialAmount, setInitialAmount] = useState(String(suggestedStart));
-  const [cashflow, setCashflow] = useState('45000');
-  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage' | 'life'>('withdrawal');
-  const [frequency, setFrequency] = useState('4');
-  const [years, setYears] = useState('30');
+  const [cashflow, setCashflow] = useState(String(Math.max(0, monthlyContribution * 12)));
+  const [flowType, setFlowType] = useState<'contribution' | 'withdrawal' | 'percentage' | 'life'>('contribution');
+  const [frequency, setFrequency] = useState('12');
+  const [years, setYears] = useState(String(Math.min(60, Math.max(1, Math.round(horizonYears)))));
   const [runs, setRuns] = useState('5000');
   const [inflationAdjusted, setInflationAdjusted] = useState(true);
   const [inflation, setInflation] = useState('2.5');
