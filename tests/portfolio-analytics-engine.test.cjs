@@ -6,6 +6,7 @@ const {
   rollingPortfolioReturns,
   calculateHistoricalTailRisk,
   correlationMatrix,
+  calculateBenchmarkMetrics,
 } = require('/tmp/wealth-os-engine/portfolioAnalyticsEngine.js');
 
 const dailyDates = (start, count) => Array.from({ length: count }, (_, i) => new Date(Date.parse(start + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10));
@@ -75,6 +76,23 @@ test('correlation matrix is symmetric with unit diagonal', () => {
   assert.equal(matrix[1][1], 1);
   assert.ok(Math.abs(matrix[0][1] - matrix[1][0]) < 1e-12);
   assert.ok(matrix[0][1] > 0.99);
+});
+
+test('benchmark metrics recover beta, annualized alpha and perfect fit from a synthetic series', () => {
+  const benchmark = [-0.02, -0.01, 0.01, 0.02, 0.03, -0.03];
+  const portfolio = benchmark.map(value => 2 * value + 0.001);
+  const result = calculateBenchmarkMetrics(portfolio, benchmark, 252, 0);
+  assert.equal(result.observations, 6);
+  assert.ok(Math.abs(result.beta - 2) < 1e-12);
+  assert.ok(Math.abs(result.alpha - 0.252) < 1e-10);
+  assert.ok(Math.abs(result.rSquared - 1) < 1e-12);
+});
+
+test('benchmark metrics return null when the benchmark has no variance', () => {
+  const result = calculateBenchmarkMetrics([0.01, -0.01, 0.02], [0, 0, 0], 252, 0.02);
+  assert.equal(result.beta, null);
+  assert.equal(result.alpha, null);
+  assert.equal(result.observations, 3);
 });
 
 test('alignment resets its return baseline after a stale-data gap', () => {
