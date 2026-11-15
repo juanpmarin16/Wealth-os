@@ -48,7 +48,7 @@ test('maximum drawdown is measured from portfolio NAV', () => {
 
 test('annualized return uses the actual observation date span', () => {
   const dates = dailyDates('2023-01-01', 366).slice(1);
-  const rows = dates.map(date => ({ date, returns: [0.001] }));
+  const rows = dates.map((date, index) => ({ date, startDate: index === 0 ? '2023-01-01' : dates[index - 1], returns: [0.001] }));
   const stats = calculatePortfolioStats(rows, [1], 0, 'none');
   assert.ok(Math.abs(stats.annualReturn - (Math.pow(1.001, 365) - 1)) < 1e-9);
 });
