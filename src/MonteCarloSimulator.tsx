@@ -73,10 +73,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [inflationAdjusted, setInflationAdjusted] = useState(true);
   const [inflation, setInflation] = useState('2.5');
   const [inflationVol, setInflationVol] = useState('1.5');
-  const [assets, setAssets] = useState<Array<{ name: string; ticker: string; symbol?: string; weight: number; mean: number; vol: number }>>(() => {
+  const [assets, setAssets] = useState<Array<{ name: string; ticker: string; symbol?: string; proxyTicker?: string; weight: number; mean: number; vol: number }>>(() => {
     const total = portfolioAssets.reduce((sum, asset) => sum + Math.max(0, asset.value), 0);
     return portfolioAssets.length
-      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, symbol: asset.symbol, weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: asset.expectedReturn ?? 7, vol: asset.volatility ?? 15 }))
+      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, symbol: asset.symbol, proxyTicker: '', weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: asset.expectedReturn ?? 7, vol: asset.volatility ?? 15 }))
       : [{ name: 'Global Equities', ticker: 'Equity', weight: 60, mean: 7, vol: 16 }, { name: 'Bonds', ticker: 'Bond', weight: 40, mean: 3.5, vol: 7 }];
   });
   const [results, setResults] = useState<PathSummary[] | null>(null);
@@ -113,7 +113,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           } catch { return {}; }
         })();
         const defaultSymbols: Record<string, string> = {
-          VGWL: 'VGWL.DE', EQQQ: 'EQQQ.DE', BTC: 'BTC-USD', LDGL: 'LDGL.L',
+          VGWL: 'VGWL.DE', EQQQ: 'EQQQ.DE', BTC: 'BTC-USD', VWCE: 'VWCE.DE', VWRL: 'VWRL.DE', VUSA: 'VUSA.DE', CSPX: 'CSPX.AS',
         };
         const matched = await Promise.all(assets.map(async asset => {
           const symbolFromAsset = asset.symbol?.trim() || '';
@@ -163,13 +163,41 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             throw new Error(`No saved or archived market history was found for ${asset.ticker || asset.name} (${symbol || 'no market symbol'}). Open Market Data, check its symbol mapping, and pull the full price history.`);
           }
           if (!currency) throw new Error(`The quote currency for ${asset.ticker} is unknown. Historical returns cannot be converted reliably to EUR.`);
-          return { asset, listing, currency, rows };
+          const primaryMonths = new Set(rows.map((point: any) => point.date.slice(0, 7))).size;
+          let proxyRows: any[] = [];
+          let proxyCurrency = '';
+          let proxySymbol = '';
+          if (primaryMonths < 13) {
+            if (!asset.proxyTicker?.trim()) throw new Error(`${asset.ticker} has only ${primaryMonths} months of price history. Historical Monte Carlo requires at least 12 monthly returns (13 month-end prices). Select a proxy ticker for this asset in the Proxy ticker field, or use Parameterized returns.`);
+            const proxyTicker = asset.proxyTicker.trim().toUpperCase();
+            const proxyListing = listings.find(item => normalize(item.symbol) === normalize(proxyTicker)) || listings.find(item => normalize(byInstrument.get(item.instrumentId)?.name || '') === normalize(proxyTicker));
+            proxySymbol = proxyListing?.symbol || symbolMappings[proxyTicker] || defaultSymbols[proxyTicker] || proxyTicker;
+            let proxyLocal = proxyListing ? prices.filter(price => price.listingId === proxyListing.id && price.close > 0) : [];
+            const proxyController = new AbortController();
+            const proxyTimeout = window.setTimeout(() => proxyController.abort(), 12000);
+            try {
+              const proxyResponse = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(proxySymbol)}`, { headers: { Accept: 'application/json' }, signal: proxyController.signal });
+              const proxyPayload = await proxyResponse.json().catch(() => null);
+              if (proxyResponse.ok && Array.isArray(proxyPayload?.prices)) {
+                const merged = new Map<string, any>();
+                proxyLocal.forEach((point: any) => merged.set(point.date, point));
+                proxyPayload.prices.filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0).forEach((point: any) => merged.set(point.date, { date: point.date, close: point.close, adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close }));
+                proxyRows = [...merged.values()].sort((a: any, b: any) => a.date.localeCompare(b.date));
+                proxyCurrency = String(proxyPayload.prices.find((point: any) => point.currency)?.currency || proxyListing?.quoteCurrency || '').toUpperCase();
+              }
+            } finally { window.clearTimeout(proxyTimeout); }
+            if (!proxyRows.length) throw new Error(`Proxy ${proxyTicker} (${proxySymbol}) has no saved market history. Import its full history using Update Market Data before running Monte Carlo.`);
+            if (!proxyCurrency) throw new Error(`The quote currency for proxy ${proxyTicker} is unknown. Historical returns cannot be converted reliably to EUR.`);
+            const proxyMonths = new Set(proxyRows.map(point => point.date.slice(0, 7))).size;
+            if (proxyMonths < 13) throw new Error(`Proxy ${proxyTicker} has only ${proxyMonths} months of history. Choose a proxy with at least 13 month-end prices.`);
+          }
+          return { asset, listing, currency, rows, proxyRows, proxyCurrency, proxySymbol };
         }));
         // Yahoo reports London-listed prices in pence (GBX/GBp); normalize
         // their FX exposure to GBP and scale quoted price levels from pence to pounds.
         const fxCurrencyFor = (currency: string) => currency === 'GBX' || currency === 'GBP' ? 'GBP' : currency;
         const priceScaleFor = (currency: string) => currency === 'GBX' ? 0.01 : 1;
-        const foreignCurrencies = [...new Set(matched.map(item => fxCurrencyFor(item.currency)).filter(currency => currency !== 'EUR'))];
+        const foreignCurrencies = [...new Set(matched.flatMap(item => [fxCurrencyFor(item.currency), ...(item.proxyRows.length ? [fxCurrencyFor(item.proxyCurrency)] : [])]).filter(currency => currency !== 'EUR'))];
         const fxMap = new Map<string, FxPoint[]>();
         for (const currency of foreignCurrencies) {
           const pair = savedFx.filter(rate => rate.baseCurrency === 'EUR' && rate.quoteCurrency === currency)
@@ -199,13 +227,25 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         });
         const monthlyMaps = matched.map((item, index) => {
           const monthly = new Map<string, number>();
-          for (const [month, point] of assetPriceMonths[index]) {
-            // Use the FX quote on the asset's actual final trading date for that month.
-            const fxCurrency = fxCurrencyFor(item.currency);
-            const fx = fxCurrency === 'EUR' ? 1 : latestFxRate(fxMap.get(fxCurrency) || [], point.date);
-            if (!fx || fx <= 0) continue;
-            monthly.set(month, point.value * priceScaleFor(item.currency) / fx);
+          const addSeries = (sourceRows: any[], currency: string, onlyBefore?: string) => {
+            const sourceMonths = new Map<string, { date: string; value: number }>();
+            for (const point of sourceRows) {
+              const month = point.date.slice(0, 7);
+              if (onlyBefore && month >= onlyBefore) continue;
+              const existing = sourceMonths.get(month);
+              if (!existing || point.date > existing.date) sourceMonths.set(month, { date: point.date, value: point.adjustedClose && point.adjustedClose > 0 ? point.adjustedClose : point.close });
+            }
+            for (const [month, point] of sourceMonths) {
+              const fxCurrency = fxCurrencyFor(currency);
+              const fx = fxCurrency === 'EUR' ? 1 : latestFxRate(fxMap.get(fxCurrency) || [], point.date);
+              if (fx && fx > 0) monthly.set(month, point.value * priceScaleFor(currency) / fx);
+            }
+          };
+          if (item.proxyRows.length) {
+            const inceptionMonth = [...assetPriceMonths[index].keys()].sort()[0];
+            addSeries(item.proxyRows, item.proxyCurrency, inceptionMonth);
           }
+          addSeries(item.rows, item.currency);
           return monthly;
         });
         const periods = [...monthlyMaps[0].keys()].filter(period => monthlyMaps.every(map => map.has(period))).sort();
@@ -224,7 +264,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           const currencyText = foreignCurrencies.length ? ` FX-converted to EUR (${foreignCurrencies.join(', ')}); GBX prices scaled to GBP before conversion.` : ' All assets are already quoted in EUR.';
           const assetCoverage = matched.map((item, index) => {
             const months = [...assetPriceMonths[index].keys()].sort();
-            return `${item.asset.ticker}: ${item.rows.length.toLocaleString('en-GB')} daily / ${months.length} price months (${months[0] || '—'} to ${months[months.length - 1] || '—'})`;
+            return `${item.asset.ticker}: ${item.rows.length.toLocaleString('en-GB')} daily / ${months.length} price months (${months[0] || '—'} to ${months[months.length - 1] || '—'})${item.proxyRows.length ? `; proxy ${item.asset.proxyTicker} used before inception (${item.proxyRows.length} daily prices)` : ''}`;
           }).join(' · ');
           const fxCoverage = foreignCurrencies.map(currency => {
             const points = fxMap.get(currency) || [];
@@ -331,10 +371,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   }, [results, currentValue, flowType]);
 
 
-  const updateAsset = (index: number, field: 'name' | 'ticker' | 'weight' | 'mean' | 'vol', value: string) => {
-    setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' || field === 'ticker' ? value : Number(value) || 0 } : a));
+  const updateAsset = (index: number, field: 'name' | 'ticker' | 'proxyTicker' | 'weight' | 'mean' | 'vol', value: string) => {
+    setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' || field === 'ticker' || field === 'proxyTicker' ? value.toUpperCase() : Number(value) || 0 } : a));
   };
-  const addAsset = () => { if (assets.length < 8) setAssets(prev => [...prev, { name: `Asset ${prev.length + 1}`, ticker: '', weight: 0, mean: 5, vol: 15 }]); };
+  const addAsset = () => { if (assets.length < 12) setAssets(prev => [...prev, { name: `Asset ${prev.length + 1}`, ticker: '', proxyTicker: '', weight: 0, mean: 5, vol: 15 }]); };
   const chart = (p10: number[], p50: number[], p90: number[]) => {
     const width = 760, height = 250, pad = 36;
     const max = Math.max(1, ...p90);
@@ -354,7 +394,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   };
 
   return <div className="mc-page">
-    <header className="mc-heading"><div><p className="mc-eyebrow">PLANNING & RISK</p><h2>Monte Carlo Simulator</h2><p>Explore thousands of possible portfolio outcomes instead of relying on a single forecast. {portfolioAssets.length ? `Linked to your portfolio: ${portfolioAssets.length} tracked assets.` : 'No assets found; add a hypothetical allocation to begin.'}</p></div><span className="mc-pill">Stochastic projection</span></header>
+    <header className="mc-heading"><div><p className="mc-eyebrow">PLANNING & RISK</p><h2>Monte Carlo Simulator</h2><p>Explore thousands of possible portfolio outcomes instead of relying on a single forecast. {portfolioAssets.length ? `Starting from ${assets.length} assets; add or remove assets below.` : 'No assets found; add a hypothetical allocation to begin.'}</p></div><span className="mc-pill">Stochastic projection</span></header>
     <div className="mc-layout">
       <section className="panel mc-config">
         <div className="mc-section-title"><div><h3>Simulation settings</h3><p>All amounts are in EUR. Assumptions are editable.</p></div></div>
@@ -377,9 +417,9 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           {flowType === 'life' && <label>Current age<input type="number" min="18" max="99" value={currentAge} onChange={e => setCurrentAge(e.target.value)} /></label>}
           <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} disabled={flowType === 'percentage' || flowType === 'life'} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust fixed cashflows</span></label>
         </div>
-        <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Saved tickers and quote currencies are matched to local market history; non-EUR assets are converted using historical FX.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
-        <div className="mc-table-wrap"><table className="mc-assets-table"><thead><tr><th>Asset</th><th>Ticker</th><th>Weight %</th><th>Annual expected return %</th><th>Annual volatility %</th><th></th></tr></thead><tbody>
-          {assets.map((asset, i) => <tr key={i}><td><input aria-label={`Asset ${i + 1} name`} value={asset.name} onChange={e => updateAsset(i, 'name', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} ticker`} value={asset.ticker} onChange={e => updateAsset(i, 'ticker', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} weight`} type="number" min="0" max="100" value={asset.weight} onChange={e => updateAsset(i, 'weight', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} mean return`} type="number" min="-99" max="200" step="0.1" value={asset.mean} disabled={model !== 'parameterized'} onChange={e => updateAsset(i, 'mean', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} volatility`} type="number" min="0" max="200" step="0.1" value={asset.vol} disabled={model !== 'parameterized'} onChange={e => updateAsset(i, 'vol', e.target.value)} /></td><td><button className="mc-remove" aria-label="Remove asset" onClick={() => setAssets(prev => prev.filter((_, j) => j !== i))} disabled={assets.length <= 1}>×</button></td></tr>)}
+        <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Assets with less than 12 months of history require a proxy ticker. Proxy returns are used only before the selected instrument's inception; the instrument's own returns take over afterward. All series are converted to EUR.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 12}>+ Add asset</button></div>
+        <div className="mc-table-wrap"><table className="mc-assets-table"><thead><tr><th>Asset</th><th>Ticker</th><th>Proxy ticker</th><th>Weight %</th><th>Annual expected return %</th><th>Annual volatility %</th><th></th></tr></thead><tbody>
+          {assets.map((asset, i) => <tr key={i}><td><input aria-label={`Asset ${i + 1} name`} value={asset.name} onChange={e => updateAsset(i, 'name', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} ticker`} value={asset.ticker} onChange={e => updateAsset(i, 'ticker', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} proxy ticker`} placeholder="Required if <12 months" value={asset.proxyTicker || ''} onChange={e => updateAsset(i, 'proxyTicker', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} weight`} type="number" min="0" max="100" value={asset.weight} onChange={e => updateAsset(i, 'weight', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} mean return`} type="number" min="-99" max="200" step="0.1" value={asset.mean} disabled={model !== 'parameterized'} onChange={e => updateAsset(i, 'mean', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} volatility`} type="number" min="0" max="200" step="0.1" value={asset.vol} disabled={model !== 'parameterized'} onChange={e => updateAsset(i, 'vol', e.target.value)} /></td><td><button className="mc-remove" aria-label="Remove asset" onClick={() => setAssets(prev => prev.filter((_, j) => j !== i))} disabled={assets.length <= 1}>×</button></td></tr>)}
         </tbody></table></div>
         <div className="mc-allocation-foot"><span>Total entered allocation</span><strong className={Math.abs(totalWeight - 100) < 0.01 ? 'is-balanced' : ''}>{totalWeight.toFixed(1)}%</strong></div>
         <button className="primary-button mc-run-button" onClick={runSimulation} disabled={!valid || isLoadingHistory}><span>▶</span> Run {Number(runs).toLocaleString('en-GB')} simulations</button>
