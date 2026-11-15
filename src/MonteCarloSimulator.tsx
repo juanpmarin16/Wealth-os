@@ -1,21 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { db } from './data/database';
+import { runMonteCarlo, type HistoryRow, type PathSummary, type SimulationModel, type ReturnDistribution } from './monteCarloEngine';
 
-type PortfolioAsset = { name: string; ticker: string; category: string; value: number; expectedReturn?: number; volatility?: number };
+type PortfolioAsset = { name: string; ticker: string; symbol?: string; category: string; value: number; expectedReturn?: number; volatility?: number };
 type Props = { initialPortfolioValue: number; portfolioAssets: PortfolioAsset[]; monthlyContribution?: number; horizonYears?: number };
-type PathSummary = { ending: number; realEnding: number; survived: boolean; maxDrawdown: number; yearly: number[]; annualizedReturn: number; totalContributions: number; totalWithdrawals: number };
-type HistoryRow = { date: string; returns: number[] };
-type Model = 'historical' | 'statistical' | 'parameterized';
-type Distribution = 'normal' | 'student';
 
+const API = 'https://wealth-os-market-data.onrender.com';
 const euro = (n: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number.isFinite(n) ? n : 0);
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
-function randomNormal() {
-  const u = Math.max(Math.random(), 1e-12);
-  const v = Math.max(Math.random(), 1e-12);
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
 function quantile(values: number[], p: number) {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -23,72 +16,42 @@ function quantile(values: number[], p: number) {
   const lo = Math.floor(index);
   return sorted[lo] + (sorted[Math.min(lo + 1, sorted.length - 1)] - sorted[lo]) * (index - lo);
 }
-function cholesky(matrix: number[][]) {
-  const n = matrix.length, L = Array.from({ length: n }, () => Array(n).fill(0));
-  for (let i = 0; i < n; i++) for (let j = 0; j <= i; j++) {
-    let sum = matrix[i][j];
-    for (let k = 0; k < j; k++) sum -= L[i][k] * L[j][k];
-    L[i][j] = i === j ? Math.sqrt(Math.max(sum, 1e-8)) : sum / (L[j][j] || 1);
-  }
-  return L;
+function monthNumber(value: string) {
+  const [year, month] = value.split('-').map(Number);
+  return year * 12 + month - 1;
 }
-function studentRandom(df: number) {
-  let chi = 0;
-  for (let i = 0; i < df; i++) chi += randomNormal() ** 2;
-  return randomNormal() / Math.sqrt(Math.max(chi / df, 1e-9)) * Math.sqrt((df - 2) / df);
+type FxPoint = { date: string; value: number };
+async function loadFxHistory(currency: string): Promise<FxPoint[]> {
+  const symbol = `EUR${currency}=X`;
+  const savedResponse = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
+  const savedPayload = await savedResponse.json().catch(() => null);
+  if (savedResponse.ok && Array.isArray(savedPayload?.prices) && savedPayload.prices.length) {
+    return savedPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0)
+      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+  }
+  const historyResponse = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
+  const historyPayload = await historyResponse.json().catch(() => null);
+  if (!historyResponse.ok || !Array.isArray(historyPayload?.prices) || !historyPayload.prices.length) {
+    throw new Error(`Historical FX data for EUR/${currency} is unavailable. Import ${symbol} market data before using EUR-based historical simulation.`);
+  }
+  const prices = historyPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0);
+  const persist = await fetch(`${API}/api/saved-prices`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ symbol, currency: historyPayload.currency || currency, prices }),
+  });
+  if (!persist.ok) throw new Error(`Could not save historical FX data for EUR/${currency} to the market archive.`);
+  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
 }
-function pathFor(years: number, start: number, cashflow: number, frequency: number, inflationAdjusted: boolean, inflation: number, inflationVol: number, assets: { weight: number; mean: number; vol: number }[], model: Model, distribution: Distribution, df: number, history: HistoryRow[], corr: number[][], flowType: 'contribution' | 'withdrawal' | 'percentage' | 'life', withdrawalPct: number, currentAge: number, sequenceStress: number, blockYears: number, rebalancing: 'monthly' | 'annual' | 'none'): PathSummary {
-  const steps = years * 12;
-  const weights = assets.map(a => a.weight / (assets.reduce((s, b) => s + b.weight, 0) || 1));
-  let currentWeights = [...weights];
-  const historicalRows = history.length ? history : [];
-  const L = cholesky(corr.length === assets.length ? corr : assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0)));
-  const monthlyAssetReturns: number[][] = [];
-  let blockStart = Math.floor(Math.random() * Math.max(1, historicalRows.length));
-  const blockLength = Math.max(1, Math.round(blockYears)) * 12;
-  for (let month = 0; month < steps; month++) {
-    if (model === 'historical' && historicalRows.length) {
-      if (month % blockLength === 0) blockStart = Math.floor(Math.random() * historicalRows.length);
-      const row = historicalRows[(blockStart + (month % blockLength)) % historicalRows.length];
-      monthlyAssetReturns.push(assets.map((a, i) => Number.isFinite(row.returns[i]) ? row.returns[i] : Math.max(-.95, (Math.pow(1 + a.mean / 100, 1 / 12) - 1) + a.vol / 100 / Math.sqrt(12) * randomNormal())));
-    } else {
-      const z = assets.map(() => distribution === 'student' ? studentRandom(df) : randomNormal());
-      const correlated = z.map((_, i) => L[i].slice(0, i + 1).reduce((sum, value, j) => sum + value * z[j], 0));
-      monthlyAssetReturns.push(assets.map((a, i) => Math.max(-.95, Math.pow(1 + a.mean / 100, 1 / 12) - 1 + a.vol / 100 / Math.sqrt(12) * correlated[i])));
-    }
+function latestFxRate(points: FxPoint[], date: string): number | null {
+  let low = 0, high = points.length - 1, found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (points[mid].date <= date) { found = mid; low = mid + 1; } else high = mid - 1;
   }
-  if (sequenceStress > 0) {
-    const blocks = Array.from({ length: years }, (_, y) => ({ y, r: monthlyAssetReturns.slice(y * 12, (y + 1) * 12).reduce((p, row) => p * (1 + row.reduce((v, r, i) => v + weights[i] * r, 0)), 1) - 1 }));
-    const worst = blocks.slice().sort((a, b) => a.r - b.r).slice(0, sequenceStress).map(b => b.y);
-    const order = [...worst, ...blocks.map(b => b.y).filter(y => !worst.includes(y))];
-    const original = monthlyAssetReturns.slice();
-    order.forEach((source, target) => { for (let m = 0; m < 12; m++) monthlyAssetReturns[target * 12 + m] = original[source * 12 + m]; });
-  }
-  let balance = start, peak = Math.max(start, 1), maxDrawdown = 0, cumulativeInflation = 1, survived = true, totalContributions = 0, totalWithdrawals = 0, growthFactor = 1;
-  const yearly: number[] = [start];
-  const cashflowEvery = 12 / frequency;
-  for (let month = 0; month < steps; month++) {
-    cumulativeInflation *= Math.max(.5, 1 + (inflation / 100) / 12 + (inflationVol / 100) / Math.sqrt(12) * randomNormal());
-    const r = monthlyAssetReturns[month].reduce((v, ret, i) => v + currentWeights[i] * ret, 0);
-    growthFactor *= Math.max(.05, 1 + r);
-    balance = Math.max(0, balance * (1 + r));
-    if (1 + r > 0) currentWeights = currentWeights.map((weight, i) => weight * (1 + monthlyAssetReturns[month][i]) / (1 + r));
-    if (rebalancing === 'monthly' || (rebalancing === 'annual' && (month + 1) % 12 === 0)) currentWeights = [...weights];
-    if ((month + 1) % cashflowEvery === 0) {
-      let flow = cashflow * (inflationAdjusted ? cumulativeInflation : 1) / frequency;
-      if (flowType === 'withdrawal') flow = -flow;
-      if (flowType === 'percentage') flow = -Math.max(0, balance * withdrawalPct / 100 / frequency);
-      if (flowType === 'life') flow = -balance / Math.max(1, 100 - (currentAge + Math.ceil((month + 1) / 12))) / frequency;
-      if (flow < 0) { const paid = Math.min(balance, -flow); balance -= paid; totalWithdrawals += paid; if (paid + 1e-8 < -flow) survived = false; }
-      else { balance += flow; totalContributions += flow; }
-    }
-    peak = Math.max(peak, balance);
-    maxDrawdown = Math.max(maxDrawdown, peak > 0 ? (peak - balance) / peak : 0);
-    if ((month + 1) % 12 === 0) yearly.push(balance);
-  }
-  return { ending: balance, realEnding: balance / Math.max(cumulativeInflation, .01), survived, maxDrawdown, yearly, annualizedReturn: Math.pow(growthFactor, 1 / Math.max(1, years)) - 1, totalContributions, totalWithdrawals };
+  if (found < 0) return null;
+  const ageDays = (new Date(date + 'T00:00:00Z').getTime() - new Date(points[found].date + 'T00:00:00Z').getTime()) / 86400000;
+  return ageDays <= 5 ? points[found].value : null;
 }
-
 function Histogram({ values }: { values: number[] }) {
   const bins = 24, max = Math.max(...values, 1), min = Math.min(...values, 0), step = (max - min) / bins || 1;
   const counts = Array(bins).fill(0) as number[];
@@ -118,6 +81,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
       : [{ name: 'Global Equities', ticker: 'Equity', weight: 60, mean: 7, vol: 16 }, { name: 'Bonds', ticker: 'Bond', weight: 40, mean: 3.5, vol: 7 }];
   });
   const [results, setResults] = useState<PathSummary[] | null>(null);
+  const [lastSeed, setLastSeed] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [model, setModel] = useState<Model>('historical');
   const [distribution, setDistribution] = useState<Distribution>('student');
@@ -134,95 +98,147 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   useEffect(() => {
     let cancelled = false;
     async function loadHistory() {
+      setIsLoadingHistory(true);
       try {
-        const [instruments, listings, prices] = await Promise.all([db.instruments.toArray(), db.listings.toArray(), db.marketPrices.toArray()]);
-        const byInstrument = new Map(instruments.map(i => [i.id, i]));
-        const series = assets.map(asset => {
-          const normalize = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, '');
-          const keys = [normalize(asset.name), normalize(asset.ticker)];
-          const listing = listings.find(l => keys.includes(normalize(l.symbol)) || keys.includes(normalize(byInstrument.get(l.instrumentId)?.name || '')));
-          const rows = listing ? prices.filter(p => p.listingId === listing.id).sort((a, b) => a.date.localeCompare(b.date)) : [];
-          return rows.map(p => ({ date: p.date.slice(0, 7), value: p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+        const [instruments, listings, prices, savedFx] = await Promise.all([
+          db.instruments.toArray(), db.listings.toArray(), db.marketPrices.toArray(), db.fxRates.toArray(),
+        ]);
+        const byInstrument = new Map(instruments.map(item => [item.id, item]));
+        const normalize = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const matched = assets.map(asset => {
+          const symbol = asset.symbol?.trim() || '';
+          const listing = listings.find(item => symbol && normalize(item.symbol) === normalize(symbol))
+            || listings.find(item => normalize(item.symbol) === normalize(asset.ticker))
+            || listings.find(item => normalize(byInstrument.get(item.instrumentId)?.name || '') === normalize(asset.name));
+          if (!listing) throw new Error(`No saved market-data listing matches ${asset.ticker || asset.name}. Open Market Data and import this asset first.`);
+          const instrument = byInstrument.get(listing.instrumentId);
+          const currency = (listing.quoteCurrency || instrument?.baseCurrency || '').toUpperCase();
+          if (!currency) throw new Error(`The quote currency for ${asset.ticker} is unknown. Historical returns cannot be converted reliably to EUR.`);
+          const rows = prices.filter(price => price.listingId === listing.id && price.close > 0)
+            .sort((a, b) => a.date.localeCompare(b.date));
+          return { asset, listing, currency, rows };
         });
-        const periods = Array.from(new Set(series.flatMap(rows => rows.map(r => r.date)))).sort();
-        const aligned = series.map(rows => {
-          const byMonth = new Map(rows.map(r => [r.date, r.value]));
-          let last = 0;
-          return periods.map(p => { if (byMonth.has(p)) last = byMonth.get(p) || last; return last; });
+        const foreignCurrencies = [...new Set(matched.map(item => item.currency).filter(currency => currency !== 'EUR'))];
+        const fxMap = new Map<string, FxPoint[]>();
+        for (const currency of foreignCurrencies) {
+          const pair = savedFx.filter(rate => rate.baseCurrency === 'EUR' && rate.quoteCurrency === currency)
+            .map(rate => ({ date: rate.date, value: rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
+          const inverse = savedFx.filter(rate => rate.baseCurrency === currency && rate.quoteCurrency === 'EUR')
+            .map(rate => ({ date: rate.date, value: 1 / rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
+          const local = pair.length ? pair : inverse;
+          fxMap.set(currency, local.length ? local : await loadFxHistory(currency));
+        }
+        const monthlyMaps = matched.map(item => {
+          const monthly = new Map<string, number>();
+          for (const point of item.rows) {
+            let value = point.adjustedClose && point.adjustedClose > 0 ? point.adjustedClose : point.close;
+            if (item.currency !== 'EUR') {
+              const fx = latestFxRate(fxMap.get(item.currency) || [], point.date);
+              if (!fx || fx <= 0) continue;
+              value /= fx;
+            }
+            monthly.set(point.date.slice(0, 7), value);
+          }
+          return monthly;
         });
+        const periods = [...monthlyMaps[0].keys()].filter(period => monthlyMaps.every(map => map.has(period))).sort();
         const rows: HistoryRow[] = [];
         for (let i = 1; i < periods.length; i++) {
-          const returns = aligned.map(p => p[i - 1] > 0 && p[i] > 0 ? p[i] / p[i - 1] - 1 : NaN);
-          if (returns.filter(Number.isFinite).length >= Math.max(1, Math.ceil(assets.length * .6))) rows.push({ date: periods[i], returns });
+          if (monthNumber(periods[i]) - monthNumber(periods[i - 1]) !== 1) continue;
+          const returns = monthlyMaps.map(map => {
+            const previous = map.get(periods[i - 1]) || 0;
+            const current = map.get(periods[i]) || 0;
+            return previous > 0 && current > 0 ? current / previous - 1 : NaN;
+          });
+          if (returns.every(Number.isFinite)) rows.push({ date: periods[i], returns });
         }
         if (!cancelled) {
           setHistory(rows);
-          setAssets(previous => previous.map((asset, index) => {
-            const monthlyPrices = Array.from(new Map(series[index].map(point => [point.date, point.value])).entries()).sort((a, b) => a[0].localeCompare(b[0])).map(entry => entry[1]);
-            const returns = monthlyPrices.slice(1).map((value, j) => monthlyPrices[j] > 0 && value > 0 ? value / monthlyPrices[j] - 1 : NaN).filter(Number.isFinite);
-            if (returns.length < 12) return asset;
-            const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
-            const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, returns.length - 1);
-            return { ...asset, mean: (Math.pow(1 + mean, 12) - 1) * 100, vol: Math.sqrt(variance * 12) * 100 };
-          }));
-          setHistoryStatus(rows.length ? rows.length + ' aligned monthly observations loaded from saved adjusted prices; return assumptions auto-calibrated where history is available.' : 'No matching historical prices found; choose a statistical or parameterized model.');
+          const currencyText = foreignCurrencies.length ? ` FX-converted to EUR (${foreignCurrencies.join(', ')}).` : ' All assets are already quoted in EUR.';
+          setHistoryStatus(rows.length
+            ? `${rows.length} complete, consecutive monthly observations loaded from adjusted prices.${currencyText}`
+            : 'No complete consecutive monthly observations are available for every selected asset. Historical and statistical models are disabled until sufficient data is available.');
         }
-      } catch (e) { if (!cancelled) setHistoryStatus('Could not load saved market data: ' + (e instanceof Error ? e.message : String(e))); }
-      finally { if (!cancelled) setIsLoadingHistory(false); }
+      } catch (cause) {
+        if (!cancelled) {
+          setHistory([]);
+          setHistoryStatus(cause instanceof Error ? cause.message : String(cause));
+        }
+      } finally {
+        if (!cancelled) setIsLoadingHistory(false);
+      }
     }
-    loadHistory();
+    if (assets.length) loadHistory();
+    else { setHistoryStatus('Add at least one asset to load historical data.'); setIsLoadingHistory(false); }
     return () => { cancelled = true; };
   }, []);
   const totalWeight = assets.reduce((sum, a) => sum + a.weight, 0);
   const currentValue = Number(initialAmount) || 0;
-  const valid = currentValue >= 0 && Number(cashflow) >= 0 && Number(years) >= 1 && Number(years) <= 60 && Number(runs) >= 100 && Number(runs) <= 20000 && totalWeight > 0;
+  const valid = currentValue >= 0 && Number(cashflow) >= 0 && Number(years) >= 1 && Number(years) <= 60 && Number(runs) >= 100 && Number(runs) <= 20000 && totalWeight > 0 && assets.every(asset => asset.weight >= 0 && asset.mean > -100 && asset.vol >= 0);
   const normalizedAssets = assets.map(a => ({ ...a, weight: a.weight / totalWeight }));
   const runSimulation = () => {
     if (!valid) return;
     setError('');
     const count = clamp(Math.round(Number(runs)), 100, 20000);
     const duration = clamp(Math.round(Number(years)), 1, 60);
-    const flowFrequency = Number(frequency);
-    const amount = Number(cashflow);
-    if (model === 'historical' && history.length < 12) { setError('Historical bootstrap needs at least 12 aligned monthly observations. Import market history or select a statistical/parameterized model.'); setResults(null); return; }
-    const n = normalizedAssets.length;
-    const correlationMatrix = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => {
-      if (i === j) return 1;
-      const pairs = history.map(row => [row.returns[i], row.returns[j]]).filter(pair => Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
-      if (pairs.length < 3) return 0;
-      const mi = pairs.reduce((sum, pair) => sum + pair[0], 0) / pairs.length;
-      const mj = pairs.reduce((sum, pair) => sum + pair[1], 0) / pairs.length;
-      const cov = pairs.reduce((sum, pair) => sum + (pair[0] - mi) * (pair[1] - mj), 0);
-      const si = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[0] - mi) ** 2, 0));
-      const sj = Math.sqrt(pairs.reduce((sum, pair) => sum + (pair[1] - mj) ** 2, 0));
-      return si > 0 && sj > 0 ? clamp(cov / (si * sj), -.95, .95) : 0;
-    }));
-    setResults(Array.from({ length: count }, () => pathFor(duration, currentValue, amount, flowFrequency, inflationAdjusted, Number(inflation) || 0, Number(inflationVol) || 0, normalizedAssets, model, distribution, clamp(Number(df) || 5, 3, 30), history, correlationMatrix, flowType, Number(withdrawalPct) || 0, clamp(Number(currentAge) || 40, 18, 99), Number(sequenceStress) || 0, Number(blockYears) || 1, rebalancing)));
+    const seed = Math.floor(Math.random() * 0xffffffff);
+    const simulationAssets = normalizedAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, weight: asset.weight, mean: asset.mean, vol: asset.vol }));
+    try {
+      const nextResults = runMonteCarlo({
+        years: duration,
+        initialValue: currentValue,
+        annualCashflow: Number(cashflow) || 0,
+        frequency: Number(frequency),
+        inflationAdjustedCashflows: inflationAdjusted,
+        inflationMean: Number(inflation) || 0,
+        inflationVolatility: Number(inflationVol) || 0,
+        model,
+        distribution,
+        degreesOfFreedom: Number(df),
+        cashflowType: flowType,
+        annualWithdrawalRate: Number(withdrawalPct) || 0,
+        currentAge: Number(currentAge) || 40,
+        sequenceStressYears: Number(sequenceStress) || 0,
+        blockYears: Number(blockYears) || 1,
+        rebalancing,
+        seed,
+      }, simulationAssets, history, count);
+      setResults(nextResults);
+      setLastSeed(seed);
+    } catch (cause) {
+      setResults(null);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
+
 
   const stats = useMemo(() => {
     if (!results?.length) return null;
-    const nominal = results.map(r => r.ending);
-    const real = results.map(r => r.realEnding);
-    const drawdowns = results.map(r => r.maxDrawdown);
-    const yearsCount = Math.max(...results.map(r => r.yearly.length)) - 1;
-    const medianPath = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.5));
-    const p10Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.1));
-    const p90Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(r => r.yearly[year] ?? 0), 0.9));
-    const annualized = results.map(r => r.annualizedReturn);
+    const nominal = results.map(result => result.ending);
+    const real = results.map(result => result.realEnding);
+    const drawdowns = results.map(result => result.maxDrawdown);
+    const yearsCount = results[0].yearly.length - 1;
+    const medianPath = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(result => result.yearly[year]), .5));
+    const p10Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(result => result.yearly[year]), .1));
+    const p90Path = Array.from({ length: yearsCount + 1 }, (_, year) => quantile(results.map(result => result.yearly[year]), .9));
+    const annualized = results.map(result => result.annualizedReturn);
     const percentiles = [.05,.1,.25,.5,.75,.9,.95];
     const distributionRows = percentiles.map(p => [(p * 100) + 'th', euro(quantile(nominal, p)), euro(quantile(real, p)), pct(quantile(annualized, p))]);
+    const survival = results.filter(result => flowType === 'contribution' ? result.ending > 0 : result.survived).length / results.length;
+    const lossProbability = results.filter(result => result.ending < currentValue + result.totalContributions - result.totalWithdrawals).length / results.length;
     const riskRows = [
-      ['Average total contributions', euro(results.reduce((sum, r) => sum + r.totalContributions, 0) / results.length)],
-      ['Average total withdrawals', euro(results.reduce((sum, r) => sum + r.totalWithdrawals, 0) / results.length)],
+      ['Average total contributions', euro(results.reduce((sum, result) => sum + result.totalContributions, 0) / results.length)],
+      ['Average total withdrawals', euro(results.reduce((sum, result) => sum + result.totalWithdrawals, 0) / results.length)],
       ['Average ending balance', euro(nominal.reduce((sum, value) => sum + value, 0) / nominal.length)],
-      ['Probability of ending below initial value', pct(results.filter(r => r.ending < currentValue).length / results.length)],
-      ['Probability of funding all withdrawals', pct(results.filter(r => r.survived && r.ending > 0).length / results.length)],
-      ['Median maximum drawdown', pct(quantile(drawdowns, .5))],
-      ['95th percentile maximum drawdown', pct(quantile(drawdowns, .95))]
+      ['Probability of ending below net nominal capital contributed', pct(lossProbability)],
+      [flowType === 'contribution' ? 'Probability of retaining a positive balance' : 'Probability of funding all scheduled withdrawals', pct(survival)],
+      ['Median maximum drawdown (cashflow-adjusted NAV)', pct(quantile(drawdowns, .5))],
+      ['95th percentile maximum drawdown (cashflow-adjusted NAV)', pct(quantile(drawdowns, .95))],
     ];
-    return { nominal, real, drawdowns, medianPath, p10Path, p90Path, survival: results.filter(r => r.survived && r.ending > 0).length / results.length, lossProbability: results.filter(r => r.ending < currentValue).length / results.length, distributionRows, riskRows, yearlyRows: Array.from({ length: yearsCount + 1 }, (_, y) => [String(y), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(r => r.yearly[y] ?? 0), p)))]) };
-  }, [results, initialAmount, years, currentValue]);
+    const yearlyRows = Array.from({ length: yearsCount + 1 }, (_, year) => [String(year), ...[.1,.25,.5,.75,.9].map(p => euro(quantile(results.map(result => result.yearly[year]), p)))]);
+    return { nominal, real, drawdowns, medianPath, p10Path, p90Path, survival, lossProbability, distributionRows, riskRows, yearlyRows };
+  }, [results, currentValue, flowType]);
+
 
   const updateAsset = (index: number, field: 'name' | 'ticker' | 'weight' | 'mean' | 'vol', value: string) => {
     setAssets(prev => prev.map((a, i) => i === index ? { ...a, [field]: field === 'name' || field === 'ticker' ? value : Number(value) || 0 } : a));
@@ -247,7 +263,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   };
 
   return <div className="mc-page">
-    <header className="mc-heading"><div><p className="mc-eyebrow">PLANNING & RISK</p><h2>Monte Carlo Simulator</h2><p>Explore thousands of possible portfolio outcomes instead of relying on a single forecast. {portfolioAssets.length ? `Linked to your portfolio: ${portfolioAssets.length} tracked assets.` : 'No tracked assets found yet; you can still model a hypothetical allocation.'}</p></div><span className="mc-pill">Stochastic projection</span></header>
+    <header className="mc-heading"><div><p className="mc-eyebrow">PLANNING & RISK</p><h2>Monte Carlo Simulator</h2><p>Explore thousands of possible portfolio outcomes instead of relying on a single forecast. {portfolioAssets.length ? `Linked to your portfolio: ${portfolioAssets.length} tracked assets.` : 'No assets found; add a hypothetical allocation to begin.'}</p></div><span className="mc-pill">Stochastic projection</span></header>
     <div className="mc-layout">
       <section className="panel mc-config">
         <div className="mc-section-title"><div><h3>Simulation settings</h3><p>All amounts are in EUR. Assumptions are editable.</p></div></div>
@@ -261,16 +277,16 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Expected inflation mean (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
           <label>Inflation volatility (%)<input type="number" min="0" max="20" step="0.1" value={inflationVol} onChange={e => setInflationVol(e.target.value)} /></label>
           {model === 'historical' && <label>Bootstrap block length (years)<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="1">1 year (single-year bootstrap)</option><option value="2">2 years</option><option value="3">3 years</option><option value="5">5 years</option></select></label>}
-          <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns</option><option value="parameterized">Parameterized returns</option></select></label>
+          <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns (historical moments)</option><option value="parameterized">Parameterized returns (manual assumptions)</option></select></label>
           {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as Distribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
-          {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" value={df} onChange={e => setDf(e.target.value)} /></label>}
+          {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" step="1" value={df} onChange={e => setDf(e.target.value)} /></label>}
           <label>Rebalancing<select value={rebalancing} onChange={e => setRebalancing(e.target.value as 'monthly' | 'annual' | 'none')}><option value="annual">Annual</option><option value="monthly">Monthly</option><option value="none">Buy and hold (no rebalancing)</option></select></label>
           <label>Worst return years first<select value={sequenceStress} onChange={e => setSequenceStress(e.target.value)}><option value="0">Off</option>{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1} year(s)</option>)}</select></label>
           {flowType === 'percentage' && <label>Annual withdrawal (%)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>}
           {flowType === 'life' && <label>Current age<input type="number" min="18" max="99" value={currentAge} onChange={e => setCurrentAge(e.target.value)} /></label>}
           <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust cashflows</span></label>
         </div>
-        <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Saved tickers are matched to local market history.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
+        <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Saved tickers and quote currencies are matched to local market history; non-EUR assets are converted using historical FX.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
         <div className="mc-table-wrap"><table className="mc-assets-table"><thead><tr><th>Asset</th><th>Ticker</th><th>Weight %</th><th>Mean return %</th><th>Volatility %</th><th></th></tr></thead><tbody>
           {assets.map((asset, i) => <tr key={i}><td><input aria-label={`Asset ${i + 1} name`} value={asset.name} onChange={e => updateAsset(i, 'name', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} ticker`} value={asset.ticker} onChange={e => updateAsset(i, 'ticker', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} weight`} type="number" min="0" max="100" value={asset.weight} onChange={e => updateAsset(i, 'weight', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} mean return`} type="number" min="-30" max="50" step="0.1" value={asset.mean} onChange={e => updateAsset(i, 'mean', e.target.value)} /></td><td><input aria-label={`Asset ${i + 1} volatility`} type="number" min="0" max="100" step="0.1" value={asset.vol} onChange={e => updateAsset(i, 'vol', e.target.value)} /></td><td><button className="mc-remove" aria-label="Remove asset" onClick={() => setAssets(prev => prev.filter((_, j) => j !== i))} disabled={assets.length <= 1}>×</button></td></tr>)}
         </tbody></table></div>
@@ -278,11 +294,11 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         <button className="primary-button mc-run-button" onClick={runSimulation} disabled={!valid || isLoadingHistory}><span>▶</span> Run {Number(runs).toLocaleString('en-GB')} simulations</button>
         {!valid && <p className="mc-validation">Enter a valid initial value, horizon, number of paths and positive total allocation.</p>}
         {error && <p className="mc-validation" role="alert">{error}</p>}
-        <p className="mc-history-status">{isLoadingHistory ? 'Loading market history…' : historyStatus}</p><p className="mc-disclaimer">Historical bootstrap samples aligned monthly returns from locally saved adjusted prices and preserves observed cross-asset co-movement. Statistical and parameterized models use the assumptions above. Results are hypothetical and exclude taxes and fees.</p>
+        <p className="mc-history-status">{isLoadingHistory ? 'Loading market history…' : historyStatus}</p><p className="mc-disclaimer">Historical bootstrap resamples complete consecutive monthly EUR returns. Statistical returns use historical moments and correlations; parameterized returns use your editable assumptions. FX conversion is required for non-EUR assets. Results are hypothetical and exclude taxes and fees.</p>
       </section>
       <section className="mc-results">
         {!stats && <div className="panel mc-empty"><div className="mc-empty-icon">⌁</div><h3>Your projection starts here</h3><p>Set your assumptions and run the simulation to see a range of possible outcomes, portfolio survival and downside risk.</p><div className="mc-empty-stats"><span><strong>10th–90th</strong><small>Outcome range</small></span><span><strong>Median</strong><small>Central scenario</small></span><span><strong>5,000</strong><small>Paths by default</small></span></div></div>}
-        {stats && <><div className="mc-result-header"><div><h3>Simulation results</h3><p>{results?.length.toLocaleString('en-GB')} independent paths · {years} years · nominal and inflation-adjusted values</p></div><button className="secondary-button" onClick={runSimulation}>↻ Re-run</button></div>
+        {stats && <><div className="mc-result-header"><div><h3>Simulation results</h3><p>{results?.length.toLocaleString('en-GB')} paths · {years} years · seed {lastSeed} · nominal and inflation-adjusted values</p></div><button className="secondary-button" onClick={runSimulation}>↻ Re-run</button></div>
           <div className="mc-kpis">
             <div className="panel mc-kpi"><span>Median ending balance</span><strong>{euro(quantile(stats.nominal, .5))}</strong><small>Nominal value</small></div>
             <div className="panel mc-kpi"><span>10th percentile</span><strong>{euro(quantile(stats.nominal, .1))}</strong><small>Downside outcome</small></div>
