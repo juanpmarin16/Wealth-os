@@ -158,9 +158,11 @@ function buildMonthlyReturns(
       : 1;
     generated.push(modelAssets.map((asset, i) => {
       if (config.distribution === 'student') {
-        const monthlyMean = asset.mean / 100 / 12;
-        const monthlyVol = asset.vol / 100 / Math.sqrt(12);
-        return Math.max(-0.999999, monthlyMean + monthlyVol * correlatedNormal[i] * commonTScale);
+        const annualGross = 1 + asset.mean / 100;
+        const monthlyGross = Math.pow(annualGross, 1 / 12);
+        const annualVariance = (asset.vol / 100) ** 2;
+        const monthlyVariance = Math.max(0, Math.pow(annualVariance + annualGross ** 2, 1 / 12) - monthlyGross ** 2);
+        return Math.max(-0.999999, monthlyGross - 1 + Math.sqrt(monthlyVariance) * correlatedNormal[i] * commonTScale);
       }
       const parameters = annualLogParameters(asset.mean, asset.vol);
       return Math.exp(parameters.meanLog / 12 + parameters.volatilityLog / Math.sqrt(12) * correlatedNormal[i]) - 1;
