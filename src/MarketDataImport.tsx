@@ -303,13 +303,11 @@ export default function MarketDataImport({
           } catch (cause) {
             durabilityWarnings.push(`${asset.ticker}: ${cause instanceof Error ? cause.message : "persistent storage unavailable"}`);
           }
-          if (!fullHistoryAlreadyImported) {
-            fullHistoryListings.add(listingId);
-            try {
-              localStorage.setItem(FULL_HISTORY_KEY, JSON.stringify([...fullHistoryListings]));
-            } catch {
-              // If storage is unavailable, the next run safely repeats the full-history import.
-            }
+          fullHistoryListings.add(listingId);
+          try {
+            localStorage.setItem(FULL_HISTORY_KEY, JSON.stringify([...fullHistoryListings]));
+          } catch {
+            // This is only a cache hint; PostgreSQL remains the source of truth.
           }
           updated += 1;
           totalPrices += count;
