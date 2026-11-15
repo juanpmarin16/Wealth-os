@@ -82,7 +82,7 @@ export function estimateAssetMoments(history: HistoryRow[], assetCount: number):
     const values = complete.map(row => row.returns[index]);
     const meanMonthly = values.reduce((sum, value) => sum + value, 0) / values.length;
     const varianceMonthly = values.reduce((sum, value) => sum + (value - meanMonthly) ** 2, 0) / (values.length - 1);
-    return { mean: meanMonthly * 12, vol: Math.sqrt(varianceMonthly * 12) };
+    return { mean: meanMonthly * 12 * 100, vol: Math.sqrt(varianceMonthly * 12) * 100 };
   });
 }
 
