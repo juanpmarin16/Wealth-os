@@ -18,7 +18,7 @@ export type SimulationConfig = {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const monthIndex = (date: string) => {
-  const match = /^(\\d{4})-(\\d{2})$/.exec(date);
+  const match = /^(\d{4})-(\d{2})$/.exec(date);
   return match ? Number(match[1]) * 12 + Number(match[2]) - 1 : NaN;
 };
 
