@@ -113,22 +113,6 @@ export function calculatePortfolioStats(
   };
 }
 
-export function rollingReturnsByCalendarDays(rows: AlignedReturnRow[], windowDays: number): number[] {
-  if (windowDays < 1 || rows.length < 2) return [];
-  const output: number[] = [];
-  let start = 0;
-  for (let end = 1; end < rows.length; end++) {
-    const targetDay = dayNumber(rows[end].date) - windowDays;
-    while (start + 1 < end && dayNumber(rows[start + 1].date) <= targetDay) start++;
-    if (dayNumber(rows[end].date) - dayNumber(rows[start].date) < windowDays) continue;
-    let gross = 1;
-    for (let i = start + 1; i <= end; i++) gross *= 1 + rows[i].returns.reduce((sum, value, index) => sum + value * 0, 0);
-    // Portfolio-level rolling returns are supplied by rollingPortfolioReturns below.
-    output.push(gross - 1);
-  }
-  return output;
-}
-
 export function rollingPortfolioReturns(dates: string[], portfolioReturns: number[], windowDays: number): number[] {
   if (dates.length !== portfolioReturns.length || windowDays < 1) return [];
   const output: number[] = [];
