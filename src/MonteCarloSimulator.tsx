@@ -127,10 +127,9 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
                 .sort((a, b) => a.date.localeCompare(b.date))
             : [];
           let remoteCurrency = '';
-          // Use the browser's IndexedDB cache first. PostgreSQL is only a fallback
-          // when this device has no local history; never request provider full history
-          // from the Monte Carlo screen.
-          if (symbol && rows.length === 0) {
+          // Reconcile the browser cache with PostgreSQL on every load. A non-empty
+          // IndexedDB cache can still be incomplete or older than the durable archive.
+          if (symbol) {
             const controller = new AbortController();
             const timeout = window.setTimeout(() => controller.abort(), 12000);
             try {
@@ -139,15 +138,20 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
               });
               const payload = await response.json().catch(() => null);
               if (response.ok && Array.isArray(payload?.prices)) {
-                rows = payload.prices
+                const remoteRows = payload.prices
                   .filter((point: any) => typeof point.date === 'string' && Number.isFinite(point.close) && point.close > 0)
                   .map((point: any) => ({
                     date: point.date,
                     close: point.close,
                     adjustedClose: Number.isFinite(point.adjustedClose) && point.adjustedClose > 0 ? point.adjustedClose : point.close,
-                  }))
-                  .sort((a: any, b: any) => a.date.localeCompare(b.date)) as typeof rows;
-                remoteCurrency = String(payload?.prices.find((point: any) => point.currency)?.currency || '').toUpperCase();
+                  }));
+                const byDate = new Map<string, any>();
+                rows.forEach((point: any) => byDate.set(point.date, point));
+                remoteRows.forEach((point: any) => byDate.set(point.date, point));
+                rows = [...byDate.values()].sort((a: any, b: any) => a.date.localeCompare(b.date)) as typeof rows;
+                remoteCurrency = String(payload.prices.find((point: any) => point.currency)?.currency || '').toUpperCase();
+              } else if (!rows.length) {
+                throw new Error(`PostgreSQL archive returned no saved prices for ${symbol}.`);
               }
             } finally {
               window.clearTimeout(timeout);
@@ -161,7 +165,11 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           if (!currency) throw new Error(`The quote currency for ${asset.ticker} is unknown. Historical returns cannot be converted reliably to EUR.`);
           return { asset, listing, currency, rows };
         }));
-        const foreignCurrencies = [...new Set(matched.map(item => item.currency).filter(currency => currency !== 'EUR'))];
+        // Yahoo reports London-listed prices in pence (GBX/GBp); normalize
+        // their FX exposure to GBP and scale quoted price levels from pence to pounds.
+        const fxCurrencyFor = (currency: string) => currency === 'GBX' || currency === 'GBP' ? 'GBP' : currency;
+        const priceScaleFor = (currency: string) => currency === 'GBX' ? 0.01 : 1;
+        const foreignCurrencies = [...new Set(matched.map(item => fxCurrencyFor(item.currency)).filter(currency => currency !== 'EUR'))];
         const fxMap = new Map<string, FxPoint[]>();
         for (const currency of foreignCurrencies) {
           const pair = savedFx.filter(rate => rate.baseCurrency === 'EUR' && rate.quoteCurrency === currency)
@@ -170,9 +178,11 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             .map(rate => ({ date: rate.date, value: 1 / rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
           const local = pair.length ? pair : inverse;
           let remote: FxPoint[] = [];
-          if (!local.length) remote = await loadFxHistory(currency);
+          try { remote = await loadFxHistory(currency); }
+          catch (cause) { if (!local.length) throw cause; }
           const merged = new Map<string, number>();
-          [...remote, ...local].forEach(point => merged.set(point.date, point.value));
+          local.forEach(point => merged.set(point.date, point.value));
+          remote.forEach(point => merged.set(point.date, point.value));
           fxMap.set(currency, [...merged.entries()].map(([date, value]) => ({ date, value })).sort((a, b) => a.date.localeCompare(b.date)));
         }
         const assetPriceMonths = matched.map(item => {
@@ -191,9 +201,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           const monthly = new Map<string, number>();
           for (const [month, point] of assetPriceMonths[index]) {
             // Use the FX quote on the asset's actual final trading date for that month.
-            const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], point.date);
+            const fxCurrency = fxCurrencyFor(item.currency);
+            const fx = fxCurrency === 'EUR' ? 1 : latestFxRate(fxMap.get(fxCurrency) || [], point.date);
             if (!fx || fx <= 0) continue;
-            monthly.set(month, point.value / fx);
+            monthly.set(month, point.value * priceScaleFor(item.currency) / fx);
           }
           return monthly;
         });
@@ -210,7 +221,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
         }
         if (!cancelled) {
           setHistory(rows);
-          const currencyText = foreignCurrencies.length ? ` FX-converted to EUR (${foreignCurrencies.join(', ')}).` : ' All assets are already quoted in EUR.';
+          const currencyText = foreignCurrencies.length ? ` FX-converted to EUR (${foreignCurrencies.join(', ')}); GBX prices scaled to GBP before conversion.` : ' All assets are already quoted in EUR.';
           const assetCoverage = matched.map((item, index) => {
             const months = [...assetPriceMonths[index].keys()].sort();
             return `${item.asset.ticker}: ${item.rows.length.toLocaleString('en-GB')} daily / ${months.length} price months (${months[0] || '—'} to ${months[months.length - 1] || '—'})`;
