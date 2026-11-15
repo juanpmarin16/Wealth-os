@@ -55,7 +55,6 @@ export default function PortfolioWorkspace() {
   const [loading, setLoading] = useState(false);
   const [dataError, setDataError] = useState('');
   const [dataStatus, setDataStatus] = useState('Historical data has not been loaded yet.');
-  const [benchmark, setBenchmark] = useState('VWCE');
   const [varLevel, setVarLevel] = useState<'95' | '99'>('95');
   const [varPeriod, setVarPeriod] = useState<'daily' | 'monthly' | 'annual'>('daily');
   const [stress, setStress] = useState('2008');
@@ -65,7 +64,6 @@ export default function PortfolioWorkspace() {
   const validAssets = assets.filter(a => a.ticker.trim() && a.weight > 0);
   const nav = useMemo(() => {
     if (!series.length || !validAssets.length) return [];
-    const byTicker = new Map(series.map(s => [s.asset.ticker, s]));
     const aligned = series.map(s => new Map(s.prices.map(p => [p.date, p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close])));
     const dates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].sort();
     const last: number[] = Array(series.length).fill(0);
@@ -77,7 +75,21 @@ export default function PortfolioWorkspace() {
     });
     return points;
   }, [series, assets, weights.join('|')]);
-  const returnArrays = series.map(s => assetReturns(s.prices));
+  const returnArrays = useMemo(() => {
+    if (!series.length) return [] as number[][];
+    const allDates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].sort();
+    const priceMaps = series.map(s => new Map(s.prices.map(p => [p.date, p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close])));
+    const lastPrices = Array(series.length).fill(0) as number[];
+    const previousPrices = Array(series.length).fill(0) as number[];
+    const aligned = series.map(() => [] as number[]);
+    allDates.forEach(date => {
+      priceMaps.forEach((map, i) => { const value = map.get(date); if (value && value > 0) lastPrices[i] = value; });
+      if (lastPrices.every(value => value > 0)) {
+        lastPrices.forEach((value, i) => { if (previousPrices[i] > 0) aligned[i].push(value / previousPrices[i] - 1); previousPrices[i] = value; });
+      }
+    });
+    return aligned;
+  }, [series]);
   const portfolioStats = useMemo(() => returnArrays.length && returnArrays.every(r => r.length >= 2) ? weightedStats(returnArrays, series.map(s => weights[assets.findIndex(a => a.ticker === s.asset.ticker)])) : null, [series, assets, weights.join('|')]);
   const dailyReturns = portfolioStats?.daily ?? [];
   const scale = varPeriod === 'daily' ? 1 : varPeriod === 'monthly' ? Math.sqrt(21) : Math.sqrt(252);
@@ -86,8 +98,11 @@ export default function PortfolioWorkspace() {
   const corrMatrix = useMemo(() => returnArrays.map(a => returnArrays.map(b => { const c = covariance(a, b); return stdev(a) && stdev(b) ? c / (stdev(a) * stdev(b)) : 0; })), [series]);
   useEffect(() => { try { localStorage.setItem('wealth-os-lab-assets', JSON.stringify(assets)); } catch { /* local save is optional */ } }, [assets]);
 
-  function updateAsset(id: string, key: keyof Asset, value: string) {
-    setAssets(prev => prev.map(a => a.id === id ? { ...a, [key]: key === 'weight' || key === 'expectedReturn' || key === 'volatility' ? Number(value) || 0 : value } : a));
+  function updateAsset(id: string, key: 'name' | 'ticker' | 'symbol' | 'category', value: string) {
+    setAssets(prev => prev.map(a => a.id === id ? { ...a, [key]: value } : a));
+  }
+  function updateNumber(id: string, key: 'weight' | 'expectedReturn' | 'volatility', value: string) {
+    setAssets(prev => prev.map(a => a.id === id ? { ...a, [key]: Number(value) || 0 } : a));
   }
   function addAsset() { if (assets.length < 12) setAssets(prev => [...prev, { id: uid(), name: 'New Asset', ticker: '', symbol: '', category: 'Equity', weight: 0, expectedReturn: 7, volatility: 18 }]); }
   async function loadMarketData() {
@@ -133,7 +148,7 @@ export default function PortfolioWorkspace() {
       <div className="content-area">
         {page === 'Portfolio Builder' && <><div className="page-heading"><div><div className="eyebrow">PORTFOLIO CONSTRUCTION</div><h1>Portfolio Builder</h1><p>Build and save hypothetical asset allocations. No personal transactions or brokerage data required.</p></div><button className="button button-secondary" onClick={()=>setAssets(DEFAULTS)}>Reset example</button></div>
           <section className="panel builder-panel"><div className="section-heading"><div><h2>Asset allocation</h2><p>Add instruments and define target portfolio weights.</p></div><button className="button button-primary" onClick={addAsset} disabled={assets.length>=12}>+ Add asset</button></div>
-            <div className="table-scroll"><table className="data-table"><thead><tr><th>Asset name</th><th>Ticker</th><th>Market symbol</th><th>Asset class</th><th>Weight</th><th>Expected return</th><th>Volatility</th><th/></tr></thead><tbody>{assets.map(a=><tr key={a.id}><td><input value={a.name} onChange={e=>updateAsset(a.id,'name',e.target.value)}/></td><td><input value={a.ticker} onChange={e=>updateAsset(a.id,'ticker',e.target.value.toUpperCase())}/></td><td><input value={a.symbol} placeholder={SYMBOLS[a.ticker.toUpperCase()]||'Yahoo symbol'} onChange={e=>updateAsset(a.id,'symbol',e.target.value.toUpperCase())}/></td><td><select value={a.category} onChange={e=>updateAsset(a.id,'category',e.target.value)}>{['Equity','Bond','Crypto','Commodity','Real Estate','Cash','Other'].map(c=><option key={c}>{c}</option>)}</select></td><td><div className="weight-input"><input type="number" min="0" max="100" step=".1" value={a.weight} onChange={e=>updateAsset(a.id,'weight',e.target.value)}/><span>%</span></div></td><td><div className="weight-input"><input type="number" step=".1" value={a.expectedReturn} onChange={e=>updateAsset(a.id,'expectedReturn',e.target.value)}/><span>%</span></div></td><td><div className="weight-input"><input type="number" min="0" step=".1" value={a.volatility} onChange={e=>updateAsset(a.id,'volatility',e.target.value)}/><span>%</span></div></td><td><button className="icon-button danger" onClick={()=>setAssets(prev=>prev.filter(x=>x.id!==a.id))} aria-label="Remove asset">×</button></td></tr>)}</tbody></table></div>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>Asset name</th><th>Ticker</th><th>Market symbol</th><th>Asset class</th><th>Weight</th><th>Expected return</th><th>Volatility</th><th/></tr></thead><tbody>{assets.map(a=><tr key={a.id}><td><input value={a.name} onChange={e=>updateAsset(a.id,'name',e.target.value)}/></td><td><input value={a.ticker} onChange={e=>updateAsset(a.id,'ticker',e.target.value.toUpperCase())}/></td><td><input value={a.symbol} placeholder={SYMBOLS[a.ticker.toUpperCase()]||'Yahoo symbol'} onChange={e=>updateAsset(a.id,'symbol',e.target.value.toUpperCase())}/></td><td><select value={a.category} onChange={e=>updateAsset(a.id,'category',e.target.value)}>{['Equity','Bond','Crypto','Commodity','Real Estate','Cash','Other'].map(c=><option key={c}>{c}</option>)}</select></td><td><div className="weight-input"><input type="number" min="0" max="100" step=".1" value={a.weight} onChange={e=>updateNumber(a.id,'weight',e.target.value)}/><span>%</span></div></td><td><div className="weight-input"><input type="number" step=".1" value={a.expectedReturn} onChange={e=>updateNumber(a.id,'expectedReturn',e.target.value)}/><span>%</span></div></td><td><div className="weight-input"><input type="number" min="0" step=".1" value={a.volatility} onChange={e=>updateNumber(a.id,'volatility',e.target.value)}/><span>%</span></div></td><td><button className="icon-button danger" onClick={()=>setAssets(prev=>prev.filter(x=>x.id!==a.id))} aria-label="Remove asset">×</button></td></tr>)}</tbody></table></div>
             <div className="allocation-footer"><div><span>Total allocation</span><strong className={Math.abs(totalWeight-100)<.01?'good-text':'warning-text'}>{totalWeight.toFixed(1)}%</strong></div><div className="allocation-bar">{assets.map(a=><i key={a.id} style={{width:`${totalWeight?Math.max(0,a.weight)/totalWeight*100:0}%`}} title={a.ticker}/>)}</div><small>{Math.abs(totalWeight-100)<.01?'Allocation is fully invested.':'Weights are normalized for calculations; adjust to 100% for clarity.'}</small></div>
           </section>
           <div className="builder-bottom"><section className="panel assumptions-panel"><div className="section-heading"><div><h2>Investment assumptions</h2><p>Inputs for forward-looking projections.</p></div></div><div className="form-grid"><label>Initial investment ({baseCurrency})<input type="number" min="0" value={initialValue} onChange={e=>setInitialValue(e.target.value)}/></label><label>Monthly contribution ({baseCurrency})<input type="number" min="0" value={contribution} onChange={e=>setContribution(e.target.value)}/></label><label>Investment horizon (years)<input type="number" min="1" max="60" value={horizon} onChange={e=>setHorizon(e.target.value)}/></label></div></section>
@@ -145,7 +160,7 @@ export default function PortfolioWorkspace() {
           <section className="panel"><div className="section-heading"><div><h2>Growth of 100</h2><p>Weighted portfolio index, normalized to 100 at inception.</p></div></div><LineChart values={historicalIndex}/></section>
           <section className="panel"><div className="section-heading"><div><h2>Asset performance</h2><p>Daily price history currently loaded from the durable archive.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Asset</th><th>Observations</th><th>First date</th><th>Last date</th><th>Period return</th><th>Weight</th></tr></thead><tbody>{series.map(s=><tr key={s.asset.id}><td>{s.asset.name} <small>({s.asset.ticker})</small></td><td>{s.prices.length.toLocaleString('en-GB')}</td><td>{s.prices[0]?.date||'—'}</td><td>{s.prices[s.prices.length-1]?.date||'—'}</td><td>{s.prices.length>1?pct((s.prices[s.prices.length-1].adjustedClose||s.prices[s.prices.length-1].close)/(s.prices[0].adjustedClose||s.prices[0].close)-1):'—'}</td><td>{pct(weights[assets.findIndex(a=>a.id===s.asset.id)])}</td></tr>)}</tbody></table></div></section>
         </>}
-        {page === 'Monte Carlo' && <><div className="page-heading"><div><div className="eyebrow">FORWARD-LOOKING SIMULATION</div><h1>Monte Carlo</h1><p>Simulate a distribution of possible future portfolio outcomes.</p></div></div><MonteCarloSimulator key={assets.map(a=>a.ticker+':'+a.weight).join('|')} initialPortfolioValue={Number(initialValue)||0} portfolioAssets={assets.map(a=>({name:a.name,ticker:a.ticker,category:a.category,value:a.weight}))}/></>}
+        {page === 'Monte Carlo' && <><div className="page-heading"><div><div className="eyebrow">FORWARD-LOOKING SIMULATION</div><h1>Monte Carlo</h1><p>Simulate a distribution of possible future portfolio outcomes.</p></div></div><MonteCarloSimulator key={assets.map(a=>a.ticker+':'+a.weight).join('|')} initialPortfolioValue={Number(initialValue)||0} horizonYears={Number(horizon)||20} monthlyContribution={Number(contribution)||0} portfolioAssets={assets.map(a=>({name:a.name,ticker:a.ticker,category:a.category,value:a.weight}))}/></>}
         {page === 'Risk Analysis' && <><div className="page-heading"><div><div className="eyebrow">DOWNSIDE & RISK METRICS</div><h1>Risk Analysis</h1><p>Historical loss distribution and portfolio risk diagnostics.</p></div><button className="button button-primary" onClick={loadMarketData} disabled={loading}>{loading?'Loading…':'↻ Load market data'}</button></div>{dataError&&<div className="alert">{dataError}</div>}<div className="metric-grid"><Metric label="Volatility" value={pct(portfolioStats?.vol??null)}/><Metric label="Sharpe ratio" value={portfolioStats?.sharpe?.toFixed(2)??'—'}/><Metric label="Sortino ratio" value={portfolioStats?.sortino?.toFixed(2)??'—'}/><Metric label="Maximum drawdown" value={pct(portfolioStats?.maxDD??null)}/></div>
           <section className="panel"><div className="section-heading"><div><h2>Value at Risk & Expected Shortfall</h2><p>Historical simulation method; losses shown as positive percentages.</p></div></div><div className="risk-controls"><label>Confidence level<select value={varLevel} onChange={e=>setVarLevel(e.target.value as '95'|'99')}><option value="95">95%</option><option value="99">99%</option></select></label><label>Holding period<select value={varPeriod} onChange={e=>setVarPeriod(e.target.value as 'daily'|'monthly'|'annual')}><option value="daily">Daily</option><option value="monthly">Monthly (21 trading days)</option><option value="annual">Annual (252 trading days)</option></select></label></div><div className="metric-grid two"><Metric label={`Historical VaR ${varLevel}`} value={pct(varLoss)}/><Metric label={`Historical CVaR ${varLevel}`} value={pct(cvarLoss)} hint="Average loss beyond VaR threshold"/></div><p className="method-note">Monthly and annual VaR are scaled from daily historical returns using the square-root-of-time rule. This is an approximation and may understate tail risk.</p></section>
           <section className="panel"><div className="section-heading"><div><h2>Correlation matrix</h2><p>Daily return correlations across selected assets.</p></div></div><div className="table-scroll"><table className="data-table matrix"><thead><tr><th>Asset</th>{series.map(s=><th key={s.asset.id}>{s.asset.ticker}</th>)}</tr></thead><tbody>{series.map((s,i)=><tr key={s.asset.id}><th>{s.asset.ticker}</th>{series.map((t,j)=><td key={t.asset.id} style={{background:`rgba(91,126,220,${Math.abs(corrMatrix[i]?.[j]||0)*.24})`}}>{corrMatrix[i]?.[j]?.toFixed(2)??'—'}</td>)}</tr>)}</tbody></table></div></section>
