@@ -111,10 +111,19 @@ async function fetchHistory(symbol: string, startDate?: string): Promise<YahooHi
     url.searchParams.set("period", "max");
   }
 
-  const response = await fetch(url.toString(), {
-    headers: { Accept: "application/json" },
-  });
-  const payload: unknown = await response.json().catch(() => null);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 40000);
+  let response: Response;
+  let payload: unknown;
+  try {
+    response = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    payload = await response.json().catch(() => null);
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const detail =
@@ -221,6 +230,7 @@ export default function MarketDataImport({
     let totalPrices = 0;
     const failures: string[] = [];
     const durabilityWarnings: string[] = [];
+    const importedCurrencies = new Set<string>();
     const skipped: string[] = [];
     const fullHistoryListings = new Set(readFullHistoryListings());
 
@@ -303,6 +313,8 @@ export default function MarketDataImport({
           }
           updated += 1;
           totalPrices += count;
+          const quoteCurrency = (data.currency || "").trim().toUpperCase();
+          if (quoteCurrency && quoteCurrency !== "EUR") importedCurrencies.add(quoteCurrency);
 
           const latest = data.prices.reduce((a, b) =>
             a.date > b.date ? a : b,
@@ -312,6 +324,32 @@ export default function MarketDataImport({
           failures.push(
             `${asset.ticker} (${symbol}): ${cause instanceof Error ? cause.message : "Unknown error"}`,
           );
+        }
+      }
+
+      // Keep the FX history required by multi-currency analytics in the same durable archive.
+      for (const currency of importedCurrencies) {
+        const fxSymbol = `EUR${currency}=X`;
+        try {
+          const savedResponse = await fetch(
+            new URL(`/api/saved-prices?symbol=${encodeURIComponent(fxSymbol)}`, MARKET_DATA_API_URL).toString(),
+            { headers: { Accept: "application/json" } },
+          );
+          const savedPayload: unknown = await savedResponse.json().catch(() => null);
+          const savedPrices = typeof savedPayload === "object" && savedPayload !== null && "prices" in savedPayload && Array.isArray(savedPayload.prices)
+            ? (savedPayload.prices as PriceRecord[])
+            : [];
+          const lastFxDate = savedPrices.reduce((latest, point) => point.date > latest ? point.date : latest, "");
+          const fxData = await fetchHistory(fxSymbol, lastFxDate || undefined);
+          const persistResponse = await fetch(new URL("/api/saved-prices", MARKET_DATA_API_URL).toString(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ symbol: fxSymbol, currency: "EUR", prices: fxData.prices }),
+          });
+          if (!persistResponse.ok) throw new Error(`Archive returned HTTP ${persistResponse.status}`);
+          totalPrices += fxData.prices.length;
+        } catch (cause) {
+          failures.push(`FX EUR/${currency}: ${cause instanceof Error ? cause.message : "FX update failed"}`);
         }
       }
 
