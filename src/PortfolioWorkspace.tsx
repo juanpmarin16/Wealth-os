@@ -56,6 +56,18 @@ function latestFxRate(points: FxPoint[], date: string): number | null {
   const age = (Date.parse(date + 'T00:00:00Z') - Date.parse(points[found].date + 'T00:00:00Z')) / 86400000;
   return age <= 5 ? points[found].value : null;
 }
+function latestPriceAt(points: Price[], date: string): number | null {
+  let low = 0, high = points.length - 1, found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (points[mid].date <= date) { found = mid; low = mid + 1; } else high = mid - 1;
+  }
+  if (found < 0) return null;
+  const age = (Date.parse(date + 'T00:00:00Z') - Date.parse(points[found].date + 'T00:00:00Z')) / 86400000;
+  if (age > 5) return null;
+  const price = points[found];
+  return price.adjustedClose && price.adjustedClose > 0 ? price.adjustedClose : price.close;
+}
 function loadAssets(): Asset[] {
   try { const raw = localStorage.getItem('wealth-os-lab-assets'); const parsed = raw ? JSON.parse(raw) : null; if (Array.isArray(parsed) && parsed.length) return parsed; } catch { /* use defaults */ }
   return DEFAULTS;
@@ -147,24 +159,29 @@ export default function PortfolioWorkspace() {
       const foreignCurrencies = [...new Set(rawFetched.map(item => item.currency).filter(currency => currency !== 'EUR'))];
       const fxMap = new Map<string, FxPoint[]>();
       for (const currency of foreignCurrencies) fxMap.set(currency, await loadFxHistory(currency));
-      const fetched: Series[] = rawFetched.map(item => {
-        const converted = item.prices.flatMap((price: Price) => {
-          const localClose = price.adjustedClose && price.adjustedClose > 0 ? price.adjustedClose : price.close;
-          const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], price.date);
-          if (!fx || fx <= 0) return [];
-          return [{
-            date: price.date,
-            close: localClose / fx,
-            adjustedClose: localClose / fx,
-            currency: 'EUR',
-          }];
+      const valuationDates = [...new Set([
+        ...rawFetched.flatMap(item => item.prices.map((price: Price) => price.date)),
+        ...[...fxMap.values()].flatMap(points => points.map(point => point.date)),
+      ])].sort();
+      const convertedByAsset = rawFetched.map(() => [] as Price[]);
+      for (const date of valuationDates) {
+        const eurValues = rawFetched.map(item => {
+          const localPrice = latestPriceAt(item.prices, date);
+          const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], date);
+          return localPrice !== null && fx && fx > 0 ? localPrice / fx : null;
         });
-        if (converted.length < 30) throw new Error(`${item.asset.ticker}: insufficient EUR-converted price observations. Check the historical FX archive.`);
+        if (eurValues.every((value): value is number => value !== null && Number.isFinite(value) && value > 0)) {
+          eurValues.forEach((value, index) => convertedByAsset[index].push({ date, close: value, adjustedClose: value, currency: 'EUR' }));
+        }
+      }
+      const fetched: Series[] = rawFetched.map((item, index) => {
+        const converted = convertedByAsset[index];
+        if (converted.length < 30) throw new Error(`${item.asset.ticker}: fewer than 30 aligned EUR valuation dates are available. Check the saved prices and historical FX archive.`);
         return { asset: item.asset, prices: converted };
       });
       setSeries(fetched);
       const count = fetched.reduce((sum, item) => sum + item.prices.length, 0);
-      setDataStatus(`${count.toLocaleString('en-GB')} daily adjusted price observations loaded; all assets converted to EUR where required. Portfolio returns use aligned valuation dates.`);
+      setDataStatus(`${count.toLocaleString('en-GB')} aligned daily EUR valuation observations loaded; foreign-currency assets are revalued using the FX rate on each portfolio valuation date.`);
       setOptimization([]);
       setMinimumVariance(null);
       if (!count) setDataError('No saved prices were found for this allocation. Import market data first.');
