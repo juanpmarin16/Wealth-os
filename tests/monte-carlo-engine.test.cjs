@@ -168,3 +168,11 @@ test('Student-t simple-return model reproduces configured annual moments within 
   assert.ok(Math.abs(mean - 0.07) < 0.015);
   assert.ok(Math.abs(Math.sqrt(variance) - 0.20) < 0.03);
 });
+
+
+test('historical bootstrap supports a single-asset portfolio', () => {
+  const history = flatHistory(0.01, 12);
+  const results = runMonteCarlo(config({ model: 'historical', blockYears: 1 / 12, years: 2 }), [asset()], history, 25);
+  assert.equal(results.length, 25);
+  assert.ok(results.every(row => Number.isFinite(row.ending)));
+});
