@@ -110,6 +110,13 @@ export default function PortfolioWorkspace() {
   const cvarLoss = tailRisk.cvarLoss;
   const corrMatrix = useMemo(() => correlationMatrix(returnRows), [returnRows]);
   useEffect(() => { try { localStorage.setItem('wealth-os-lab-assets', JSON.stringify(assets)); } catch { /* local save is optional */ } }, [assets]);
+  const selectedAssetKey = validAssets.map(asset => [asset.id, asset.ticker, asset.symbol].join('|')).join('||');
+  useEffect(() => {
+    setSeries([]);
+    setOptimization([]);
+    setMinimumVariance(null);
+    setDataStatus('Portfolio assets changed. Reload market data to refresh the historical analysis.');
+  }, [selectedAssetKey]);
 
   function updateAsset(id: string, key: 'name' | 'ticker' | 'symbol' | 'category', value: string) {
     setAssets(prev => prev.map(a => a.id === id ? { ...a, [key]: value } : a));
