@@ -30,6 +30,10 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const SYMBOLS: Record<string, string> = { VGWL: 'VGWL.DE', VWCE: 'VWCE.DE', VWRL: 'VWRL.DE', EQQQ: 'EQQQ.DE', LDGL: 'LDGL.L', BTC: 'BTC-USD', ETH: 'ETH-USD', MSTR: 'MSTR', SGLN: 'SGLN.L', IGLN: 'IGLN.L', VUSA: 'VUSA.DE', CSPX: 'CSPX.AS', AGGH: 'AGGH.DE', XEON: 'XEON.DE' };
 
 async function loadFxHistory(currency: string): Promise<FxPoint[]> {
+  const local = await db.fxRates.where("[baseCurrency+quoteCurrency]").equals(["EUR", currency]).toArray();
+  if (local.length) return local.map(rate => ({ date: rate.date, value: rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
+  const inverse = await db.fxRates.where("[baseCurrency+quoteCurrency]").equals([currency, "EUR"]).toArray();
+  if (inverse.length) return inverse.map(rate => ({ date: rate.date, value: 1 / rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
   const symbol = `EUR${currency}=X`;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12000);
