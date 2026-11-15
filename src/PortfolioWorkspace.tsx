@@ -82,46 +82,34 @@ export default function PortfolioWorkspace() {
   const [dataStatus, setDataStatus] = useState('Historical data has not been loaded yet.');
   const [varLevel, setVarLevel] = useState<'95' | '99'>('95');
   const [varPeriod, setVarPeriod] = useState<'daily' | 'monthly' | 'annual'>('daily');
+  const [rebalancing, setRebalancing] = useState<'monthly' | 'annual' | 'none'>('annual');
   const [stress, setStress] = useState('2008');
   const [optimization, setOptimization] = useState<{ weights: number[]; ret: number; vol: number; sharpe: number }[]>([]);
   const [minimumVariance, setMinimumVariance] = useState<{ weights: number[]; ret: number; vol: number; sharpe: number } | null>(null);
   const totalWeight = assets.reduce((s, a) => s + Math.max(0, Number(a.weight) || 0), 0);
   const weights = assets.map(a => totalWeight ? Math.max(0, a.weight) / totalWeight : 0);
   const validAssets = assets.filter(a => a.ticker.trim() && a.weight > 0);
-  const nav = useMemo(() => {
-    if (!series.length || !validAssets.length) return [];
-    const aligned = series.map(s => new Map(s.prices.map(p => [p.date, p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close])));
-    const dates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].filter(date => series.every(s => s.prices.some(p => p.date === date))).sort();
-    const last: number[] = Array(series.length).fill(0);
-    const points: number[] = [];
-    dates.forEach(date => {
-      let value = 0, used = 0;
-      series.forEach((s, i) => { const p = aligned[i].get(date); if (p && p > 0) last[i] = p; if (last[i] > 0) { value += weights[assets.findIndex(a => a.ticker === s.asset.ticker)] * last[i] / (s.prices[0]?.adjustedClose || s.prices[0]?.close || last[i]); used += weights[assets.findIndex(a => a.ticker === s.asset.ticker)]; } });
-      if (used > 0) points.push(value / used * 100);
-    });
-    return points;
-  }, [series, assets, weights.join('|')]);
-  const returnArrays = useMemo(() => {
-    if (!series.length) return [] as number[][];
-    const allDates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].filter(date => series.every(s => s.prices.some(p => p.date === date))).sort();
-    const priceMaps = series.map(s => new Map(s.prices.map(p => [p.date, p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close])));
-    const lastPrices = Array(series.length).fill(0) as number[];
-    const previousPrices = Array(series.length).fill(0) as number[];
-    const aligned = series.map(() => [] as number[]);
-    allDates.forEach(date => {
-      priceMaps.forEach((map, i) => { const value = map.get(date); if (value && value > 0) lastPrices[i] = value; });
-      if (lastPrices.every(value => value > 0)) {
-        lastPrices.forEach((value, i) => { if (previousPrices[i] > 0) aligned[i].push(value / previousPrices[i] - 1); previousPrices[i] = value; });
-      }
-    });
-    return aligned;
-  }, [series]);
-  const portfolioStats = useMemo(() => returnArrays.length && returnArrays.every(r => r.length >= 2) ? weightedStats(returnArrays, series.map(s => weights[assets.findIndex(a => a.ticker === s.asset.ticker)])) : null, [series, assets, weights.join('|')]);
+  const returnRows = useMemo(() => alignDailyAssetReturns(series.map(item => ({
+    id: item.asset.id,
+    prices: item.prices.map(price => ({ date: price.date, value: price.adjustedClose && price.adjustedClose > 0 ? price.adjustedClose : price.close })),
+  }))), [series]);
+  const seriesWeights = series.map(item => {
+    const assetIndex = assets.findIndex(asset => asset.id === item.asset.id);
+    return assetIndex >= 0 ? weights[assetIndex] : 0;
+  });
+  const portfolioStats = useMemo(
+    () => returnRows.length ? calculatePortfolioStats(returnRows, seriesWeights, 0.02, rebalancing) : null,
+    [returnRows, series, assets, rebalancing, weights.join('|')],
+  );
   const dailyReturns = portfolioStats?.daily ?? [];
-  const scale = varPeriod === 'daily' ? 1 : varPeriod === 'monthly' ? Math.sqrt(21) : Math.sqrt(252);
-  const varLoss = dailyReturns.length ? Math.max(0, -quantile(dailyReturns, 1 - Number(varLevel) / 100) * scale) : null;
-  const cvarLoss = dailyReturns.length ? Math.max(0, -avg(dailyReturns.filter(r => r <= quantile(dailyReturns, 1 - Number(varLevel) / 100))) * scale) : null;
-  const corrMatrix = useMemo(() => returnArrays.map(a => returnArrays.map(b => { const c = covariance(a, b); return stdev(a) && stdev(b) ? c / (stdev(a) * stdev(b)) : 0; })), [series]);
+  const riskSample = varPeriod === 'daily'
+    ? dailyReturns
+    : rollingPortfolioReturns(returnRows.map(row => row.date), dailyReturns, varPeriod === 'monthly' ? 30 : 365);
+  const tailRisk = calculateHistoricalTailRisk(riskSample, Number(varLevel) / 100);
+  const varLoss = tailRisk.varLoss;
+  const cvarLoss = tailRisk.cvarLoss;
+  const returnArrays = useMemo(() => series.map((_, index) => returnRows.map(row => row.returns[index])), [series, returnRows]);
+  const corrMatrix = useMemo(() => correlationMatrix(returnRows), [returnRows]);
   useEffect(() => { try { localStorage.setItem('wealth-os-lab-assets', JSON.stringify(assets)); } catch { /* local save is optional */ } }, [assets]);
 
   function updateAsset(id: string, key: 'name' | 'ticker' | 'symbol' | 'category', value: string) {
@@ -166,7 +154,7 @@ export default function PortfolioWorkspace() {
     custom: { Equity: -.15, Bond: -.10, Crypto: -.35, Commodity: -.05, 'Real Estate': -.15, Cash: 0, Other: -.10 },
   };
   const stressImpact = assets.reduce((sum, asset, i) => sum + weights[i] * (stressByClass[stress]?.[asset.category] ?? stressByClass[stress]?.Other ?? 0), 0);
-  const historicalIndex = nav.length ? nav.map(v => v / nav[0] * 100) : [];
+  const historicalIndex = portfolioStats?.nav ?? [];
   const activePage = (p: Page) => setPage(p);
 
   return <div className="wealth-app">
