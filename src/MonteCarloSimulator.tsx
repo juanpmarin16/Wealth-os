@@ -87,7 +87,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [df, setDf] = useState('5');
   const [sequenceStress, setSequenceStress] = useState('0');
   const [rebalancing, setRebalancing] = useState<'monthly' | 'annual' | 'none'>('annual');
-  const [blockYears, setBlockYears] = useState('1');
+  const [blockYears, setBlockYears] = useState('0.0833333333');
   const [withdrawalPct, setWithdrawalPct] = useState('4');
   const [currentAge, setCurrentAge] = useState('40');
   const [history, setHistory] = useState<HistoryRow[]>([]);
@@ -245,7 +245,9 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           const alignedText = `EUR-converted overlap: ${eurMonths.length} months.`;
           const returnStatus = rows.length >= 12
             ? `${rows.length} complete one-month returns are available for simulation.`
-            : `Only ${rows.length} complete one-month returns are available; at least 12 are required. This requires at least 13 aligned month-end price points for every selected asset. Use Update Market Data if the PostgreSQL archive is missing recent or historical records.`;
+            : rows.length >= 10
+              ? `Limited history: ${rows.length} complete one-month returns are available. Historical bootstrap is enabled, but this short sample increases estimation uncertainty. Use 1-month blocks; longer blocks are limited by available history.`
+              : `Only ${rows.length} complete one-month returns are available; at least 10 are required for historical bootstrap. This requires at least 11 aligned month-end price points for every selected asset. Check the asset inception date and saved price history.`;
           setHistoryStatus(`${returnStatus} ${assetCoverage}. ${overlapText} ${alignedText}${fxText}${currencyText}`);
         }
       } catch (cause) {
@@ -365,7 +367,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Simulation paths<input type="number" min="100" max="20000" step="100" value={runs} onChange={e => setRuns(e.target.value)} /></label>
           <label>Expected inflation mean (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
           <label>Inflation volatility (%)<input type="number" min="0" max="20" step="0.1" value={inflationVol} onChange={e => setInflationVol(e.target.value)} /></label>
-          {model === 'historical' && <label>Bootstrap block length (years)<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="1">1 year (single-year bootstrap)</option><option value="2">2 years</option><option value="3">3 years</option><option value="5">5 years</option></select></label>}
+          {model === 'historical' && <label>Bootstrap block length<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="0.0833333333">1 month (independent monthly blocks)</option><option value="0.25" disabled={history.length < 3}>3 months</option><option value="0.5" disabled={history.length < 6}>6 months</option><option value="1" disabled={history.length < 12}>1 year</option><option value="2" disabled={history.length < 24}>2 years</option><option value="3" disabled={history.length < 36}>3 years</option><option value="5" disabled={history.length < 60}>5 years</option></select></label>}
           <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as SimulationModel)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns (historical moments)</option><option value="parameterized">Parameterized returns (manual assumptions)</option></select></label>
           {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as ReturnDistribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
           {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" step="1" value={df} onChange={e => setDf(e.target.value)} /></label>}
