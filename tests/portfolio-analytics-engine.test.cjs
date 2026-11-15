@@ -76,3 +76,13 @@ test('correlation matrix is symmetric with unit diagonal', () => {
   assert.ok(Math.abs(matrix[0][1] - matrix[1][0]) < 1e-12);
   assert.ok(matrix[0][1] > 0.99);
 });
+
+test('alignment resets its return baseline after a stale-data gap', () => {
+  const rows = alignDailyAssetReturns([
+    { id: 'a', prices: [{ date: '2024-01-01', value: 100 }, { date: '2024-01-10', value: 120 }, { date: '2024-01-11', value: 121 }] },
+    { id: 'b', prices: [{ date: '2024-01-01', value: 100 }, { date: '2024-01-10', value: 100 }, { date: '2024-01-11', value: 110 }] },
+  ], 5);
+  assert.equal(rows.length, 1);
+  assert.ok(Math.abs(rows[0].returns[0] - (121 / 120 - 1)) < 1e-12);
+  assert.ok(Math.abs(rows[0].returns[1] - 0.1) < 1e-12);
+});
