@@ -107,8 +107,16 @@ function validateInputs(config: SimulationConfig, assets: SimulationAsset[], his
   if (!assets.length || assets.some(asset => !Number.isFinite(asset.weight) || asset.weight < 0 || !Number.isFinite(asset.mean) || asset.mean <= -100 || !Number.isFinite(asset.vol) || asset.vol < 0)) throw new Error('Every asset must have a non-negative weight, expected return above -100%, and non-negative volatility.');
   if (assets.reduce((sum, asset) => sum + asset.weight, 0) <= 0) throw new Error('Portfolio weights must add up to more than zero.');
   if (config.model === 'historical') {
-    if (history.length < 12) throw new Error('Historical bootstrap requires at least 12 complete monthly observations.');
-    if (history.some(row => row.returns.length !== assets.length || row.returns.some(value => !Number.isFinite(value) || value <= -1))) throw new Error('Historical bootstrap requires complete, valid returns for every selected asset. Missing observations cannot be replaced with synthetic returns.');
+    const completeObservations = history.filter(row =>
+      row.returns.length === assets.length &&
+      row.returns.every(value => Number.isFinite(value) && value > -1),
+    ).length;
+    if (completeObservations < 12) {
+      throw new Error(`Historical bootstrap requires at least 12 complete monthly observations for all ${assets.length} selected assets; only ${completeObservations} are currently available. Check overlapping price history and EUR FX coverage.`);
+    }
+    if (completeObservations !== history.length) {
+      throw new Error('Historical bootstrap requires complete, valid returns for every selected asset. Missing observations cannot be replaced with synthetic returns.');
+    }
     if (!Number.isInteger(config.blockYears) || config.blockYears < 1 || config.blockYears * 12 > history.length) throw new Error('The selected bootstrap block is longer than the available historical sample.');
   }
   if (config.model === 'statistical' && history.filter(row => row.returns.length === assets.length && row.returns.every(Number.isFinite)).length < 12) throw new Error('Statistical returns require at least 12 complete monthly observations.');
