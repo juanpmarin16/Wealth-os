@@ -55,11 +55,6 @@ function gammaRandom(shape: number, random: () => number): number {
   throw new Error('Student-t random generator did not converge.');
 }
 
-function standardizedStudentT(df: number, random: () => number): number {
-  const chiSquare = 2 * gammaRandom(df / 2, random);
-  return normalRandom(random) / Math.sqrt(Math.max(chiSquare / df, 1e-12)) * Math.sqrt((df - 2) / df);
-}
-
 function choleskyCorrelation(correlation: number[][]): number[][] {
   const n = correlation.length;
   const ridge = 1e-8;
