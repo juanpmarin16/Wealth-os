@@ -197,7 +197,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
             // on that actual trading date, not a later calendar month-end date.
             const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], point.date);
             if (!fx || fx <= 0) continue;
-            monthly.set(period, point.value / fx);
+            monthly.set(point.date.slice(0, 7), point.value / fx);
           }
           return monthly;
         });
