@@ -127,3 +127,21 @@ test('monthly percentage withdrawals equal the configured annual percentage of s
   assert.ok(Math.abs(result.ending - 960) < 1e-7);
   assert.equal(result.survived, true);
 });
+
+test('normal log-return model reproduces the configured annual arithmetic mean and volatility', () => {
+  const results = runMonteCarlo(config({ distribution: 'normal', seed: 24680 }), [asset({ mean: 7, vol: 20 })], [], 10000);
+  const annualReturns = results.map(row => row.annualizedReturn);
+  const mean = annualReturns.reduce((sum, value) => sum + value, 0) / annualReturns.length;
+  const variance = annualReturns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (annualReturns.length - 1);
+  assert.ok(Math.abs(mean - 0.07) < 0.01);
+  assert.ok(Math.abs(Math.sqrt(variance) - 0.20) < 0.015);
+});
+
+test('Student-t simple-return model reproduces configured annual moments within Monte Carlo sampling error', () => {
+  const results = runMonteCarlo(config({ distribution: 'student', degreesOfFreedom: 7, seed: 13579 }), [asset({ mean: 7, vol: 20 })], [], 12000);
+  const annualReturns = results.map(row => row.annualizedReturn);
+  const mean = annualReturns.reduce((sum, value) => sum + value, 0) / annualReturns.length;
+  const variance = annualReturns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (annualReturns.length - 1);
+  assert.ok(Math.abs(mean - 0.07) < 0.015);
+  assert.ok(Math.abs(Math.sqrt(variance) - 0.20) < 0.03);
+});
