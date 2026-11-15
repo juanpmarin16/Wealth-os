@@ -9,10 +9,10 @@ type Page = 'Portfolio Builder' | 'Portfolio Analysis' | 'Monte Carlo' | 'Risk A
 
 const API = 'https://wealth-os-market-data.onrender.com';
 const DEFAULTS: Asset[] = [
-  { id: '1', name: 'Vanguard FTSE All-World', ticker: 'VWCE', symbol: 'VWCE.DE', category: 'Equity', weight: 40, expectedReturn: 7, volatility: 16 },
+  { id: '1', name: 'Vanguard FTSE All-World ETF', ticker: 'VGWL', symbol: 'VGWL.DE', category: 'Equity', weight: 40, expectedReturn: 7, volatility: 16 },
   { id: '2', name: 'Invesco Nasdaq-100', ticker: 'EQQQ', symbol: 'EQQQ.DE', category: 'Equity', weight: 30, expectedReturn: 9, volatility: 22 },
   { id: '3', name: 'Bitcoin', ticker: 'BTC', symbol: 'BTC-USD', category: 'Crypto', weight: 20, expectedReturn: 12, volatility: 65 },
-  { id: '4', name: 'Physical Gold', ticker: 'SGLN', symbol: 'SGLN.L', category: 'Commodity', weight: 10, expectedReturn: 5, volatility: 14 },
+  { id: '4', name: 'L&G Global Quality Dividends ETF', ticker: 'LDGL', symbol: 'LDGL.L', category: 'Equity', weight: 10, expectedReturn: 6, volatility: 13 },
 ];
 const money = (v: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number.isFinite(v) ? v : 0);
 const pct = (v: number | null, d = 2) => v === null || !Number.isFinite(v) ? '—' : (v * 100).toFixed(d) + '%';
@@ -26,7 +26,6 @@ function loadAssets(): Asset[] {
   try { const raw = localStorage.getItem('wealth-os-lab-assets'); const parsed = raw ? JSON.parse(raw) : null; if (Array.isArray(parsed) && parsed.length) return parsed; } catch { /* use defaults */ }
   return DEFAULTS;
 }
-function assetReturns(prices: Price[]) { const clean = prices.map(p => p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close).filter(v => v > 0); return clean.slice(1).map((v, i) => v / clean[i] - 1).filter(Number.isFinite); }
 function covariance(a: number[], b: number[]) { const n = Math.min(a.length, b.length); if (n < 3) return 0; const x = a.slice(-n), y = b.slice(-n), mx = avg(x), my = avg(y); return x.reduce((s, v, i) => s + (v - mx) * (y[i] - my), 0) / (n - 1); }
 function weightedStats(returns: number[][], weights: number[]) {
   const n = Math.min(...returns.map(r => r.length)); if (!Number.isFinite(n) || n < 2) return { daily: [] as number[], annualReturn: null as number | null, vol: null as number | null, sharpe: null as number | null, sortino: null as number | null, maxDD: null as number | null };
