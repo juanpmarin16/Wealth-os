@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import MarketDataImport from './MarketDataImport';
+import { db } from './data/database';
 import MonteCarloSimulator from './MonteCarloSimulator';
 import {
   alignDailyAssetReturns,
@@ -175,13 +176,34 @@ export default function PortfolioWorkspace() {
     try {
       const rawFetched = await Promise.all(validAssets.map(async asset => {
         const symbol = asset.symbol.trim() || SYMBOLS[asset.ticker.toUpperCase()] || asset.ticker.toUpperCase();
-        const response = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(`${asset.ticker}: ${payload?.detail || response.statusText}`);
-        const prices = Array.isArray(payload.prices)
-          ? payload.prices.filter((price: Price) => price && typeof price.date === 'string' && Number.isFinite(price.close) && price.close > 0).sort((a: Price, b: Price) => a.date.localeCompare(b.date))
-          : [];
-        if (prices.length < 2) throw new Error(`${asset.ticker}: fewer than two valid saved prices were found for ${symbol}.`);
+        const localListings = await db.listings.toArray();
+        const listing = localListings.find(item => item.symbol.toUpperCase() === symbol.toUpperCase());
+        let prices: Price[] = [];
+        if (listing) {
+          const cached = await db.marketPrices.where('listingId').equals(listing.id).toArray();
+          prices = cached.filter(price => price.close > 0).map(price => ({
+            date: price.date, close: price.close, adjustedClose: price.adjustedClose, currency: price.currency,
+          })).sort((a, b) => a.date.localeCompare(b.date));
+        }
+        if (prices.length < 2) {
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 12000);
+          try {
+            const response = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, {
+              headers: { Accept: 'application/json' }, signal: controller.signal,
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(`${asset.ticker}: ${payload?.detail || response.statusText}`);
+            prices = Array.isArray(payload?.prices)
+              ? payload.prices.filter((price: Price) => price && typeof price.date === 'string' && Number.isFinite(price.close) && price.close > 0)
+                  .map((price: Price) => ({ ...price, currency: price.currency || payload.currency }))
+                  .sort((a: Price, b: Price) => a.date.localeCompare(b.date))
+              : [];
+          } finally {
+            window.clearTimeout(timeout);
+          }
+        }
+        if (prices.length < 2) throw new Error(`${asset.ticker}: fewer than two saved prices were found for ${symbol}. Use Update Market Data to import the history.`);
         const currencies = [...new Set(prices.map((price: Price) => price.currency).filter(Boolean))] as string[];
         const currency = (currencies[0] || '').toUpperCase();
         if (!currency || currencies.some(code => code.toUpperCase() !== currency)) {
@@ -224,6 +246,20 @@ export default function PortfolioWorkspace() {
       setDataStatus('Market data could not be loaded or converted reliably.');
     } finally { setLoading(false); }
   }
+  useEffect(() => {
+    if (validAssets.length) void loadMarketData();
+    else {
+      setSeries([]);
+      setDataStatus('Add at least one asset in Portfolio Builder.');
+    }
+  }, [selectedAssetKey]);
+
+  useEffect(() => {
+    const refresh = () => { void loadMarketData(); };
+    window.addEventListener('wealth-os-market-data-updated', refresh);
+    return () => window.removeEventListener('wealth-os-market-data-updated', refresh);
+  }, [selectedAssetKey]);
+
   function runOptimization() {
     if (returnRows.length < 30 || series.length < 2 || returnRows.some(row => row.returns.length !== series.length)) {
       setDataError('Load at least 30 aligned daily observations for two or more assets before optimization.');
@@ -259,7 +295,7 @@ export default function PortfolioWorkspace() {
       <div className="sidebar-bottom"><span className="status-dot"/> Local workspace <small>Research environment</small></div>
     </aside>
     <main className="main-area">
-      <header className="topbar"><div><span className="crumb">WEALTH OS</span><span className="crumb-sep">/</span><strong>{page}</strong></div><div className="topbar-right"><span className="currency-tag">EUR BASE</span><span className="user-chip">ANALYTICS</span></div></header>
+      <header className="topbar"><div><span className="crumb">WEALTH OS</span><span className="crumb-sep">/</span><strong>{page}</strong></div><div className="topbar-right"><MarketDataImport compact assets={assets.map(a=>({id:a.id,name:a.name,ticker:a.ticker,category:a.category}))}/><span className="currency-tag">EUR BASE</span><span className="user-chip">ANALYTICS</span></div></header>
       <div className="content-area">
         {page === 'Portfolio Builder' && <><div className="page-heading"><div><div className="eyebrow">PORTFOLIO CONSTRUCTION</div><h1>Portfolio Builder</h1><p>Build and save hypothetical asset allocations. No personal transactions or brokerage data required.</p></div><button className="button button-secondary" onClick={()=>setAssets(DEFAULTS)}>Reset example</button></div>
           <section className="panel builder-panel"><div className="section-heading"><div><h2>Asset allocation</h2><p>Add instruments and define target portfolio weights.</p></div><button className="button button-primary" onClick={addAsset} disabled={assets.length>=12}>+ Add asset</button></div>
@@ -269,7 +305,7 @@ export default function PortfolioWorkspace() {
           <div className="builder-bottom"><section className="panel assumptions-panel"><div className="section-heading"><div><h2>Investment assumptions</h2><p>Inputs for forward-looking projections.</p></div></div><div className="form-grid"><label>Initial investment ({baseCurrency})<input type="number" min="0" value={initialValue} onChange={e=>setInitialValue(e.target.value)}/></label><label>Monthly contribution ({baseCurrency})<input type="number" min="0" value={contribution} onChange={e=>setContribution(e.target.value)}/></label><label>Investment horizon (years)<input type="number" min="1" max="60" value={horizon} onChange={e=>setHorizon(e.target.value)}/></label></div></section>
             <section className="panel allocation-summary"><div className="section-heading"><div><h2>Portfolio summary</h2><p>Current model configuration.</p></div></div><Metric label="Assets" value={String(validAssets.length)}/><Metric label="Initial capital" value={money(Number(initialValue)||0)}/><Metric label="Monthly contribution" value={money(Number(contribution)||0)}/><button className="button button-primary full-width" onClick={()=>setPage('Portfolio Analysis')}>Analyze portfolio <span>→</span></button></section></div>
         </>}
-        {page === 'Portfolio Analysis' && <><div className="page-heading"><div><div className="eyebrow">HISTORICAL PERFORMANCE</div><h1>Portfolio Analysis</h1><p>Historical performance from adjusted prices, aligned valuation dates and EUR-converted returns.</p></div><button className="button button-primary" onClick={loadMarketData} disabled={loading}>{loading?'Loading…':'↻ Load market data'}</button></div>
+        {page === 'Portfolio Analysis' && <><div className="page-heading"><div><div className="eyebrow">HISTORICAL PERFORMANCE</div><h1>Portfolio Analysis</h1><p>Historical performance from adjusted prices, aligned valuation dates and EUR-converted returns.</p></div></div>
           {dataError&&<div className="alert">{dataError}</div>}<div className="data-status">{dataStatus}</div>
           <div className="metric-grid"><Metric label="Annualized return" value={pct(portfolioStats?.annualReturn??null)}/><Metric label="Annualized volatility" value={pct(portfolioStats?.vol??null)}/><Metric label="Sharpe ratio" value={portfolioStats?.sharpe?.toFixed(2)??'—'} hint="Risk-free rate: 2%"/><Metric label="Maximum drawdown" value={pct(portfolioStats?.maxDD??null)}/></div>
           <section className="panel"><div className="section-heading"><div><h2>Benchmark-relative performance</h2><p>CAPM alpha and beta, R-squared, tracking error and information ratio from aligned daily EUR returns.</p></div></div><div className="risk-controls"><label>Benchmark asset<select value={series[benchmarkIndex]?.asset.id || ''} onChange={event=>setBenchmarkId(event.target.value)}>{series.map(item=><option key={item.asset.id} value={item.asset.id}>{item.asset.name} ({item.asset.ticker})</option>)}</select></label></div><div className="metric-grid"><Metric label="Beta" value={benchmarkMetrics?.beta===null||benchmarkMetrics?.beta===undefined?'—':benchmarkMetrics.beta.toFixed(2)}/><Metric label="Jensen's alpha" value={pct(benchmarkMetrics?.alpha??null)} hint="Annualized arithmetic alpha"/><Metric label="R-squared" value={benchmarkMetrics?.rSquared===null||benchmarkMetrics?.rSquared===undefined?'—':benchmarkMetrics.rSquared.toFixed(3)}/><Metric label="Tracking error" value={pct(benchmarkMetrics?.trackingError??null)} hint="Annualized active-return volatility"/><Metric label="Information ratio" value={benchmarkMetrics?.informationRatio===null||benchmarkMetrics?.informationRatio===undefined?'—':benchmarkMetrics.informationRatio.toFixed(2)}/></div><p className="method-note">The selected benchmark is one of the loaded assets, not an external market index. Alpha is calculated as annualized mean portfolio excess return less beta times benchmark excess return, using a 2% annual risk-free rate. Results require overlapping observations and a benchmark with non-zero variance.</p></section>
@@ -284,7 +320,7 @@ export default function PortfolioWorkspace() {
           <section className="panel"><div className="section-heading"><div><h2>Illustrative stress scenarios</h2><p>Illustrative shocks applied to asset classes. These are not exact historical replays or statistically estimated stress distributions.</p></div></div><label className="stress-select">Scenario<select value={stress} onChange={e=>setStress(e.target.value)}><option value="2008">Global Financial Crisis (2008)</option><option value="2020">COVID-19 shock (2020)</option><option value="2022">Rate & inflation shock (2022)</option><option value="custom">Custom severe drawdown</option></select></label><div className="stress-result"><span>Estimated portfolio shock</span><strong className={stressImpact<0?'negative':''}>{pct(stressImpact)}</strong><small>Illustrative proxy based on position weights and broad asset-class shocks.</small></div></section>
         </>}
         {page === 'Optimization' && <><div className="page-heading"><div><div className="eyebrow">MEAN-VARIANCE FRAMEWORK</div><h1>Portfolio Optimization</h1><p>Explore 5,000 sampled long-only allocations using date-aligned EUR historical returns.</p></div><button className="button button-primary" onClick={runOptimization}>Run 5,000 portfolios</button></div>{dataError&&<div className="alert">{dataError}</div>}<div className="panel"><div className="section-heading"><div><h2>Optimization results</h2><p>5,000 Dirichlet-sampled long-only allocations; sampled maximum-Sharpe and minimum-volatility candidates. 2% risk-free rate.</p></div></div>{optimization.length===0?<div className="empty-state">Load historical data in Portfolio Analysis, then run the optimizer. Load aligned historical data first. These are sampled candidates, not a mathematically solved efficient frontier.</div>:<><div className="metric-grid two"><Metric label="Maximum Sharpe candidate" value={optimization[0]?.sharpe.toFixed(2)||'—'} hint="Best sampled risk-adjusted allocation"/><Metric label="Minimum volatility candidate" value={minimumVariance?pct(minimumVariance.vol):'—'} hint="Lowest sampled annualized volatility"/></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Rank</th><th>Expected annual return</th><th>Annual volatility</th><th>Sharpe</th>{series.map(s=><th key={s.asset.id}>{s.asset.ticker||s.asset.name}</th>)}</tr></thead><tbody>{optimization.map((o,i)=><tr key={i}><td>{i+1}</td><td>{pct(o.ret)}</td><td>{pct(o.vol)}</td><td>{o.sharpe.toFixed(2)}</td>{o.weights.map((w,j)=><td key={j}>{pct(w)}</td>)}</tr>)}</tbody></table></div></>}</div></>}
-        {page === 'Market Data' && <><div className="page-heading"><div><div className="eyebrow">MARKET DATA INFRASTRUCTURE</div><h1>Market Data</h1><p>Import full historical price series and maintain the durable market archive.</p></div></div><MarketDataImport assets={assets.map(a=>({id:a.id,name:a.name,ticker:a.ticker,category:a.category}))}/><section className="panel market-help"><h2>Supported market symbols</h2><p>Use Yahoo Finance symbols in the Market Symbol column in Portfolio Builder. Examples: VWCE.DE, VGWL.DE, EQQQ.DE, BTC-USD, ETH-USD, LDGL.L. Data is retrieved from the existing Wealth OS market-data API and stored in the connected archive when configured.</p><button className="button button-secondary" onClick={()=>setPage('Portfolio Analysis')}>Back to portfolio analysis</button></section></>}
+        {page === 'Market Data' && <><div className="page-heading"><div><div className="eyebrow">MARKET DATA INFRASTRUCTURE</div><h1>Market Data</h1><p>Historical prices are cached locally and archived in PostgreSQL. Use the single Update Market Data control in the top bar to fetch new records.</p></div></div><section className="panel market-help"><h2>Supported market symbols</h2><p>Use Yahoo Finance symbols in the Market Symbol column in Portfolio Builder. Examples: VWCE.DE, VGWL.DE, EQQQ.DE, BTC-USD, ETH-USD, LDGL.L. Data is retrieved from the existing Wealth OS market-data API and stored in the connected archive when configured.</p><button className="button button-secondary" onClick={()=>setPage('Portfolio Analysis')}>Back to portfolio analysis</button></section></>}
       </div>
       <footer className="app-footer">WEALTH OS · PORTFOLIO ANALYTICS & SIMULATION <span>Hypothetical analysis only · Not investment advice</span></footer>
     </main>
