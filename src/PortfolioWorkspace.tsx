@@ -122,30 +122,68 @@ export default function PortfolioWorkspace() {
   async function loadMarketData() {
     setLoading(true); setDataError('');
     try {
-      const fetched = await Promise.all(validAssets.map(async asset => {
+      const rawFetched = await Promise.all(validAssets.map(async asset => {
         const symbol = asset.symbol.trim() || SYMBOLS[asset.ticker.toUpperCase()] || asset.ticker.toUpperCase();
         const response = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
         const payload = await response.json();
         if (!response.ok) throw new Error(`${asset.ticker}: ${payload?.detail || response.statusText}`);
-        const prices = Array.isArray(payload.prices) ? payload.prices.filter((p: Price) => p && typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0) : [];
-        return { asset: { ...asset, symbol }, prices } as Series;
+        const prices = Array.isArray(payload.prices)
+          ? payload.prices.filter((price: Price) => price && typeof price.date === 'string' && Number.isFinite(price.close) && price.close > 0)
+          : [];
+        if (prices.length < 2) throw new Error(`${asset.ticker}: fewer than two valid saved prices were found for ${symbol}.`);
+        const currencies = [...new Set(prices.map((price: Price) => price.currency).filter(Boolean))] as string[];
+        const currency = (currencies[0] || '').toUpperCase();
+        if (!currency || currencies.some(code => code.toUpperCase() !== currency)) {
+          throw new Error(`${asset.ticker}: quote currency is missing or inconsistent in saved market data.`);
+        }
+        return { asset: { ...asset, symbol }, currency, prices };
       }));
-      setSeries(fetched); const count = fetched.reduce((s, x) => s + x.prices.length, 0);
-      setDataStatus(count ? `${count.toLocaleString('en-GB')} saved daily price records loaded across ${fetched.filter(x => x.prices.length).length} assets.` : 'No saved prices were found for this allocation.');
-      if (!count) setDataError('No historical data found. Open Market Data and import prices first.');
-    } catch (e) { setDataError(e instanceof Error ? e.message : String(e)); setDataStatus('Market data could not be loaded.'); }
-    finally { setLoading(false); }
+      const foreignCurrencies = [...new Set(rawFetched.map(item => item.currency).filter(currency => currency !== 'EUR'))];
+      const fxMap = new Map<string, FxPoint[]>();
+      for (const currency of foreignCurrencies) fxMap.set(currency, await loadFxHistory(currency));
+      const fetched: Series[] = rawFetched.map(item => {
+        const converted = item.prices.flatMap((price: Price) => {
+          const localClose = price.adjustedClose && price.adjustedClose > 0 ? price.adjustedClose : price.close;
+          const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], price.date);
+          if (!fx || fx <= 0) return [];
+          return [{
+            date: price.date,
+            close: localClose / fx,
+            adjustedClose: localClose / fx,
+            currency: 'EUR',
+          }];
+        });
+        if (converted.length < 30) throw new Error(`${item.asset.ticker}: insufficient EUR-converted price observations. Check the historical FX archive.`);
+        return { asset: item.asset, prices: converted };
+      });
+      setSeries(fetched);
+      const count = fetched.reduce((sum, item) => sum + item.prices.length, 0);
+      setDataStatus(`${count.toLocaleString('en-GB')} daily adjusted price observations loaded; all assets converted to EUR where required. Portfolio returns use aligned valuation dates.`);
+      setOptimization([]);
+      setMinimumVariance(null);
+      if (!count) setDataError('No saved prices were found for this allocation. Import market data first.');
+    } catch (cause) {
+      setSeries([]);
+      setDataError(cause instanceof Error ? cause.message : String(cause));
+      setDataStatus('Market data could not be loaded or converted reliably.');
+    } finally { setLoading(false); }
   }
   function runOptimization() {
-    if (returnArrays.length < 2 || returnArrays.some(r => r.length < 30)) { setDataError('Load at least 30 daily observations for two or more assets before optimization.'); return; }
+    if (returnRows.length < 30 || series.length < 2 || returnRows.some(row => row.returns.length !== series.length)) {
+      setDataError('Load at least 30 aligned daily observations for two or more assets before optimization.');
+      return;
+    }
     const candidates = Array.from({ length: 5000 }, () => {
-      const raw = assets.map(() => Math.random()); const sum = raw.reduce((a,b) => a+b,0); const w = raw.map(x => x/sum);
-      const stats = weightedStats(returnArrays, series.map(s => w[assets.findIndex(a => a.ticker === s.asset.ticker)]));
-      return { weights: w, ret: stats.annualReturn || 0, vol: stats.vol || 0, sharpe: stats.sharpe || 0 };
+      const raw = series.map(() => -Math.log(Math.max(Math.random(), 1e-12)));
+      const sum = raw.reduce((total, value) => total + value, 0);
+      const candidateWeights = raw.map(value => value / sum);
+      const stats = calculatePortfolioStats(returnRows, candidateWeights, 0.02, rebalancing);
+      return { weights: candidateWeights, ret: stats.annualReturn || 0, vol: stats.vol || 0, sharpe: stats.sharpe || 0 };
     });
-    const lowestRisk = [...candidates].sort((a,b) => a.vol-b.vol)[0] || null;
+    const lowestRisk = [...candidates].sort((a, b) => a.vol - b.vol)[0] || null;
     setMinimumVariance(lowestRisk);
-    setOptimization(candidates.sort((a,b) => b.sharpe-a.sharpe).slice(0, 20)); setDataError('');
+    setOptimization(candidates.sort((a, b) => b.sharpe - a.sharpe).slice(0, 20));
+    setDataError('');
   }
   const stressByClass: Record<string, Record<string, number>> = {
     '2008': { Equity: -.38, Bond: -.05, Crypto: -.70, Commodity: -.25, 'Real Estate': -.40, Cash: 0, Other: -.25 },
