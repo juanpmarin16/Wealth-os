@@ -95,6 +95,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [historyStatus, setHistoryStatus] = useState('Loading saved market history…');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
 
+  const assetHistoryKey = assets.map(asset => [asset.ticker, asset.symbol || '', asset.name].join('|')).join('||');
   useEffect(() => {
     let cancelled = false;
     async function loadHistory() {
@@ -126,7 +127,12 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           const inverse = savedFx.filter(rate => rate.baseCurrency === currency && rate.quoteCurrency === 'EUR')
             .map(rate => ({ date: rate.date, value: 1 / rate.rate })).sort((a, b) => a.date.localeCompare(b.date));
           const local = pair.length ? pair : inverse;
-          fxMap.set(currency, local.length ? local : await loadFxHistory(currency));
+          let remote: FxPoint[] = [];
+          try { remote = await loadFxHistory(currency); }
+          catch (cause) { if (!local.length) throw cause; }
+          const merged = new Map<string, number>();
+          [...remote, ...local].forEach(point => merged.set(point.date, point.value));
+          fxMap.set(currency, [...merged.entries()].map(([date, value]) => ({ date, value })).sort((a, b) => a.date.localeCompare(b.date)));
         }
         const monthlyMaps = matched.map(item => {
           const monthly = new Map<string, number>();
@@ -171,7 +177,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
     if (assets.length) loadHistory();
     else { setHistoryStatus('Add at least one asset to load historical data.'); setIsLoadingHistory(false); }
     return () => { cancelled = true; };
-  }, []);
+  }, [assetHistoryKey]);
   const totalWeight = assets.reduce((sum, a) => sum + a.weight, 0);
   const currentValue = Number(initialAmount) || 0;
   const valid = currentValue >= 0 && Number(cashflow) >= 0 && Number(years) >= 1 && Number(years) <= 60 && Number(runs) >= 100 && Number(runs) <= 20000 && totalWeight > 0 && assets.every(asset => asset.weight >= 0 && asset.mean > -100 && asset.vol >= 0);
