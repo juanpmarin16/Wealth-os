@@ -260,7 +260,9 @@ export function runMonteCarlo(config: SimulationConfig, assets: SimulationAsset[
   validateInputs(config, assets, history);
   if (!Number.isInteger(paths) || paths < 1 || paths > 50000) throw new Error('Simulation count must be between 1 and 50,000.');
   const completeHistory = history.filter(row => row.returns.length === assets.length && row.returns.every(Number.isFinite));
-  const correlation = config.model === 'historical' ? [] : estimateCorrelationMatrix(completeHistory, assets.length);
+  const correlation = config.model === 'historical' || completeHistory.length < 3
+    ? assets.map((_, i) => assets.map((__, j) => i === j ? 1 : 0))
+    : estimateCorrelationMatrix(completeHistory, assets.length);
   const random = createRandom(config.seed ?? 1);
   return Array.from({ length: paths }, () => simulateOnePath(config, assets, completeHistory, correlation, random));
 }
