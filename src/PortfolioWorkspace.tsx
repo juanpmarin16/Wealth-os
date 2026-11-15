@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import MarketDataImport from './MarketDataImport';
 import MonteCarloSimulator from './MonteCarloSimulator';
+import {
+  alignDailyAssetReturns,
+  calculatePortfolioStats,
+  calculateHistoricalTailRisk,
+  correlationMatrix,
+  rollingPortfolioReturns,
+} from './portfolioAnalyticsEngine';
 
 type Asset = { id: string; name: string; ticker: string; symbol: string; category: string; weight: number; expectedReturn: number; volatility: number };
-type Price = { date: string; close: number; adjustedClose?: number };
+type Price = { date: string; close: number; adjustedClose?: number; currency?: string };
 type Series = { asset: Asset; prices: Price[] };
 type Page = 'Portfolio Builder' | 'Portfolio Analysis' | 'Monte Carlo' | 'Risk Analysis' | 'Optimization' | 'Market Data';
+type FxPoint = { date: string; value: number };
 
 const API = 'https://wealth-os-market-data.onrender.com';
 const DEFAULTS: Asset[] = [
@@ -16,9 +24,50 @@ const DEFAULTS: Asset[] = [
 ];
 const money = (v: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number.isFinite(v) ? v : 0);
 const pct = (v: number | null, d = 2) => v === null || !Number.isFinite(v) ? '—' : (v * 100).toFixed(d) + '%';
-const avg = (a: number[]) => a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0;
-const stdev = (a: number[]) => a.length > 1 ? Math.sqrt(a.reduce((s, v) => s + (v - avg(a)) ** 2, 0) / (a.length - 1)) : 0;
-const quantile = (values: number[], p: number) => { const a = [...values].sort((x, y) => x - y); if (!a.length) return 0; const x = (a.length - 1) * p, lo = Math.floor(x); return a[lo] + ((a[Math.min(lo + 1, a.length - 1)] - a[lo]) * (x - lo)); };
+const uid = () => Math.random().toString(36).slice(2, 10);
+const SYMBOLS: Record<string, string> = { VGWL: 'VGWL.DE', VWCE: 'VWCE.DE', VWRL: 'VWRL.DE', EQQQ: 'EQQQ.DE', LDGL: 'LDGL.L', BTC: 'BTC-USD', ETH: 'ETH-USD', MSTR: 'MSTR', SGLN: 'SGLN.L', IGLN: 'IGLN.L', VUSA: 'VUSA.DE', CSPX: 'CSPX.AS', AGGH: 'AGGH.DE', XEON: 'XEON.DE' };
+
+async function loadFxHistory(currency: string): Promise<FxPoint[]> {
+  const symbol = `EUR${currency}=X`;
+  const saved = await fetch(`${API}/api/saved-prices?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
+  const savedPayload = await saved.json().catch(() => null);
+  if (saved.ok && Array.isArray(savedPayload?.prices) && savedPayload.prices.length) {
+    return savedPayload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0)
+      .map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+  }
+  const response = await fetch(`${API}/api/history?symbol=${encodeURIComponent(symbol)}&period=max`, { headers: { Accept: 'application/json' } });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(payload?.prices) || !payload.prices.length) throw new Error(`Historical EUR/${currency} FX rates are unavailable. Cannot calculate a reliable EUR portfolio return.`);
+  const prices = payload.prices.filter((p: any) => typeof p.date === 'string' && Number.isFinite(p.close) && p.close > 0);
+  const persist = await fetch(`${API}/api/saved-prices`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ symbol, currency: payload.currency || currency, prices }),
+  });
+  if (!persist.ok) throw new Error(`Could not archive historical EUR/${currency} FX rates.`);
+  return prices.map((p: any) => ({ date: p.date, value: p.adjustedClose > 0 ? p.adjustedClose : p.close }));
+}
+function latestFxRate(points: FxPoint[], date: string): number | null {
+  let low = 0, high = points.length - 1, found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (points[mid].date <= date) { found = mid; low = mid + 1; } else high = mid - 1;
+  }
+  if (found < 0) return null;
+  const age = (Date.parse(date + 'T00:00:00Z') - Date.parse(points[found].date + 'T00:00:00Z')) / 86400000;
+  return age <= 5 ? points[found].value : null;
+}
+function loadAssets(): Asset[] {
+  try { const raw = localStorage.getItem('wealth-os-lab-assets'); const parsed = raw ? JSON.parse(raw) : null; if (Array.isArray(parsed) && parsed.length) return parsed; } catch { /* use defaults */ }
+  return DEFAULTS;
+}
+function LineChart({ values, label = 'Portfolio growth' }: { values: number[]; label?: string }) {
+  if (values.length < 2) return <div className="empty-state">Import historical prices to display this chart.</div>;
+  const w = 900, h = 260, pad = 28, min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
+  const points = values.map((v, i) => `${pad + i / (values.length - 1) * (w - 2 * pad)},${h - pad - (v - min) / span * (h - 2 * pad)}`).join(' ');
+  return <div className="chart-wrap"><svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label}><line x1={pad} y1={h-pad} x2={w-pad} y2={h-pad} className="chart-axis"/><polyline points={points} className="chart-line" fill="none"/></svg></div>;
+}
+function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) { return <div className="metric-card"><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div>; }
+
 const uid = () => Math.random().toString(36).slice(2, 10);
 const SYMBOLS: Record<string, string> = { VGWL: 'VGWL.DE', VWCE: 'VWCE.DE', VWRL: 'VWRL.DE', EQQQ: 'EQQQ.DE', LDGL: 'LDGL.L', BTC: 'BTC-USD', ETH: 'ETH-USD', MSTR: 'MSTR', SGLN: 'SGLN.L', IGLN: 'IGLN.L', VUSA: 'VUSA.DE', CSPX: 'CSPX.AS', AGGH: 'AGGH.DE', XEON: 'XEON.DE' };
 
