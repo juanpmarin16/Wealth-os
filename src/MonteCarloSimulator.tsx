@@ -185,7 +185,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   }, [assetHistoryKey]);
   const totalWeight = assets.reduce((sum, a) => sum + a.weight, 0);
   const currentValue = Number(initialAmount) || 0;
-  const valid = currentValue >= 0 && Number(cashflow) >= 0 && Number(years) >= 1 && Number(years) <= 60 && Number(runs) >= 100 && Number(runs) <= 20000 && totalWeight > 0 && assets.every(asset => asset.weight >= 0 && asset.mean > -100 && asset.vol >= 0);
+  const valid = currentValue >= 0 && Number(cashflow) >= 0 && Number.isInteger(Number(years)) && Number(years) >= 1 && Number(years) <= 60 && Number.isInteger(Number(runs)) && Number(runs) >= 100 && Number(runs) <= 20000 && totalWeight > 0 && assets.every(asset => asset.weight >= 0 && asset.mean > -100 && asset.vol >= 0);
   const normalizedAssets = assets.map(a => ({ ...a, weight: a.weight / totalWeight }));
   const runSimulation = () => {
     if (!valid) return;
@@ -295,7 +295,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Worst return years first<select value={sequenceStress} onChange={e => setSequenceStress(e.target.value)}><option value="0">Off</option>{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1} year(s)</option>)}</select></label>
           {flowType === 'percentage' && <label>Annual withdrawal (%)<input type="number" min="0" max="30" step="0.25" value={withdrawalPct} onChange={e => setWithdrawalPct(e.target.value)} /></label>}
           {flowType === 'life' && <label>Current age<input type="number" min="18" max="99" value={currentAge} onChange={e => setCurrentAge(e.target.value)} /></label>}
-          <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust cashflows</span></label>
+          <label className="mc-checkbox"><input type="checkbox" checked={inflationAdjusted} disabled={flowType === 'percentage' || flowType === 'life'} onChange={e => setInflationAdjusted(e.target.checked)} /><span>Inflation-adjust fixed cashflows</span></label>
         </div>
         <div className="mc-section-title mc-assets-title"><div><h3>Asset allocation & assumptions</h3><p>Weights are normalized automatically. Saved tickers and quote currencies are matched to local market history; non-EUR assets are converted using historical FX.</p></div><button className="secondary-button" onClick={addAsset} disabled={assets.length >= 8}>+ Add asset</button></div>
         <div className="mc-table-wrap"><table className="mc-assets-table"><thead><tr><th>Asset</th><th>Ticker</th><th>Weight %</th><th>Annual expected return %</th><th>Annual volatility %</th><th></th></tr></thead><tbody>
