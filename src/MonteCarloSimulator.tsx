@@ -74,10 +74,10 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [inflationAdjusted, setInflationAdjusted] = useState(true);
   const [inflation, setInflation] = useState('2.5');
   const [inflationVol, setInflationVol] = useState('1.5');
-  const [assets, setAssets] = useState<Array<{ name: string; ticker: string; weight: number; mean: number; vol: number }>>(() => {
+  const [assets, setAssets] = useState<Array<{ name: string; ticker: string; symbol?: string; weight: number; mean: number; vol: number }>>(() => {
     const total = portfolioAssets.reduce((sum, asset) => sum + Math.max(0, asset.value), 0);
     return portfolioAssets.length
-      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: asset.expectedReturn ?? 7, vol: asset.volatility ?? 15 }))
+      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, symbol: asset.symbol, weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: asset.expectedReturn ?? 7, vol: asset.volatility ?? 15 }))
       : [{ name: 'Global Equities', ticker: 'Equity', weight: 60, mean: 7, vol: 16 }, { name: 'Bonds', ticker: 'Bond', weight: 40, mean: 3.5, vol: 7 }];
   });
   const [results, setResults] = useState<PathSummary[] | null>(null);
@@ -277,8 +277,8 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           <label>Expected inflation mean (%)<input type="number" min="-5" max="20" step="0.1" value={inflation} onChange={e => setInflation(e.target.value)} /></label>
           <label>Inflation volatility (%)<input type="number" min="0" max="20" step="0.1" value={inflationVol} onChange={e => setInflationVol(e.target.value)} /></label>
           {model === 'historical' && <label>Bootstrap block length (years)<select value={blockYears} onChange={e => setBlockYears(e.target.value)}><option value="1">1 year (single-year bootstrap)</option><option value="2">2 years</option><option value="3">3 years</option><option value="5">5 years</option></select></label>}
-          <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as Model)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns (historical moments)</option><option value="parameterized">Parameterized returns (manual assumptions)</option></select></label>
-          {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as Distribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
+          <label>Simulation model<select value={model} onChange={e => setModel(e.target.value as SimulationModel)}><option value="historical">Historical bootstrap</option><option value="statistical">Statistical returns (historical moments)</option><option value="parameterized">Parameterized returns (manual assumptions)</option></select></label>
+          {model !== 'historical' && <label>Return distribution<select value={distribution} onChange={e => setDistribution(e.target.value as ReturnDistribution)}><option value="normal">Normal</option><option value="student">Student t (fat tails)</option></select></label>}
           {model !== 'historical' && distribution === 'student' && <label>Student t degrees of freedom<input type="number" min="3" max="30" step="1" value={df} onChange={e => setDf(e.target.value)} /></label>}
           <label>Rebalancing<select value={rebalancing} onChange={e => setRebalancing(e.target.value as 'monthly' | 'annual' | 'none')}><option value="annual">Annual</option><option value="monthly">Monthly</option><option value="none">Buy and hold (no rebalancing)</option></select></label>
           <label>Worst return years first<select value={sequenceStress} onChange={e => setSequenceStress(e.target.value)}><option value="0">Off</option>{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1} year(s)</option>)}</select></label>
