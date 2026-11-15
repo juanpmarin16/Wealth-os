@@ -325,6 +325,10 @@ export default function MarketDataImport({
         }
       }
 
+      if (updated > 0) {
+        window.dispatchEvent(new Event("wealth-os-market-data-updated"));
+      }
+
       const skippedText = skipped.length
         ? ` Skipped assets without a market symbol: ${skipped.join(", ")}.`
         : "";
