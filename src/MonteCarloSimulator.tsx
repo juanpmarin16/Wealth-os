@@ -83,8 +83,8 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [results, setResults] = useState<PathSummary[] | null>(null);
   const [lastSeed, setLastSeed] = useState<number | null>(null);
   const [error, setError] = useState('');
-  const [model, setModel] = useState<Model>('historical');
-  const [distribution, setDistribution] = useState<Distribution>('student');
+  const [model, setModel] = useState<SimulationModel>('historical');
+  const [distribution, setDistribution] = useState<ReturnDistribution>('student');
   const [df, setDf] = useState('5');
   const [sequenceStress, setSequenceStress] = useState('0');
   const [rebalancing, setRebalancing] = useState<'monthly' | 'annual' | 'none'>('annual');
