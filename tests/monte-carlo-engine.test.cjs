@@ -120,3 +120,10 @@ test('Student-t model compounds to the exact annual expected return when volatil
   assert.ok(Math.abs(result.ending - 1070) < 1e-7);
   assert.ok(Math.abs(result.annualizedReturn - 0.07) < 1e-10);
 });
+
+test('monthly percentage withdrawals equal the configured annual percentage of start-year capital', () => {
+  const [result] = runMonteCarlo(config({ annualWithdrawalRate: 4, frequency: 12, cashflowType: 'percentage' }), [asset({ mean: 0 })], [], 1);
+  assert.ok(Math.abs(result.totalWithdrawals - 40) < 1e-7);
+  assert.ok(Math.abs(result.ending - 960) < 1e-7);
+  assert.equal(result.survived, true);
+});
