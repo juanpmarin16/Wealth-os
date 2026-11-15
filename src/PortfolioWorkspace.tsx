@@ -117,6 +117,27 @@ export default function PortfolioWorkspace() {
   const riskSample = varPeriod === 'daily'
     ? dailyReturns
     : rollingPortfolioReturns(returnRows.map(row => row.date), dailyReturns, varPeriod === 'monthly' ? 30 : 365);
+  const rollingSummary = useMemo(() => {
+    const dates = returnRows.map(row => row.date);
+    return [
+      { label: '1 year', days: 365 },
+      { label: '3 years', days: 1095 },
+      { label: '5 years', days: 1825 },
+    ].map(window => {
+      const values = rollingPortfolioReturns(dates, dailyReturns, window.days).filter(Number.isFinite);
+      const sorted = [...values].sort((a, b) => a - b);
+      const median = sorted.length
+        ? sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+        : null;
+      return {
+        label: window.label,
+        observations: values.length,
+        worst: values.length ? sorted[0] : null,
+        median,
+        best: values.length ? sorted[sorted.length - 1] : null,
+      };
+    });
+  }, [returnRows, dailyReturns]);
   const tailRisk = calculateHistoricalTailRisk(riskSample, Number(varLevel) / 100);
   const varLoss = tailRisk.varLoss;
   const cvarLoss = tailRisk.cvarLoss;
@@ -240,6 +261,7 @@ export default function PortfolioWorkspace() {
           {dataError&&<div className="alert">{dataError}</div>}<div className="data-status">{dataStatus}</div>
           <div className="metric-grid"><Metric label="Annualized return" value={pct(portfolioStats?.annualReturn??null)}/><Metric label="Annualized volatility" value={pct(portfolioStats?.vol??null)}/><Metric label="Sharpe ratio" value={portfolioStats?.sharpe?.toFixed(2)??'—'} hint="Risk-free rate: 2%"/><Metric label="Maximum drawdown" value={pct(portfolioStats?.maxDD??null)}/></div>
           <section className="panel"><div className="section-heading"><div><h2>Growth of 100</h2><p>Portfolio NAV index, normalized to 100 at inception and adjusted for the selected rebalancing policy.</p></div></div><div className="risk-controls"><label>Rebalancing policy<select value={rebalancing} onChange={e=>setRebalancing(e.target.value as 'monthly'|'annual'|'none')}><option value="annual">Annual</option><option value="monthly">Monthly</option><option value="none">Buy and hold</option></select></label></div><LineChart values={historicalIndex}/><p className="method-note">Portfolio weights drift with relative asset returns between rebalancing dates. Daily valuation dates are aligned across assets; prices are converted to EUR using historical FX rates.</p></section>
+          <section className="panel"><div className="section-heading"><div><h2>Rolling return analysis</h2><p>Compounded historical portfolio returns over overlapping calendar windows. These are total period returns, not annualized rates.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Rolling window</th><th>Observations</th><th>Worst period</th><th>Median period</th><th>Best period</th></tr></thead><tbody>{rollingSummary.map(row=><tr key={row.label}><td>{row.label}</td><td>{row.observations.toLocaleString('en-GB')}</td><td>{pct(row.worst)}</td><td>{pct(row.median)}</td><td>{pct(row.best)}</td></tr>)}</tbody></table></div><p className="method-note">Each observation compounds the aligned portfolio return series over the stated calendar window. Windows overlap and are not independent. A window is shown only when the available history spans its full duration.</p></section>
           <section className="panel"><div className="section-heading"><div><h2>Asset performance</h2><p>Adjusted prices converted to EUR; asset returns are shown over each asset's own available history.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Asset</th><th>Observations</th><th>First date</th><th>Last date</th><th>Period return</th><th>Weight</th></tr></thead><tbody>{series.map(s=><tr key={s.asset.id}><td>{s.asset.name} <small>({s.asset.ticker})</small></td><td>{s.prices.length.toLocaleString('en-GB')}</td><td>{s.prices[0]?.date||'—'}</td><td>{s.prices[s.prices.length-1]?.date||'—'}</td><td>{s.prices.length>1?pct((s.prices[s.prices.length-1].adjustedClose||s.prices[s.prices.length-1].close)/(s.prices[0].adjustedClose||s.prices[0].close)-1):'—'}</td><td>{pct(weights[assets.findIndex(a=>a.id===s.asset.id)])}</td></tr>)}</tbody></table></div></section>
         </>}
         {page === 'Monte Carlo' && <><div className="page-heading"><div><div className="eyebrow">FORWARD-LOOKING SIMULATION</div><h1>Monte Carlo</h1><p>Simulate a distribution of possible future portfolio outcomes.</p></div></div><MonteCarloSimulator key={assets.map(a=>[a.id,a.ticker,a.symbol,a.weight,a.expectedReturn,a.volatility].join(':')).join('|')+'|'+initialValue+'|'+contribution+'|'+horizon} initialPortfolioValue={Number(initialValue)||0} horizonYears={Number(horizon)||20} monthlyContribution={Number(contribution)||0} portfolioAssets={assets.map(a=>({name:a.name,ticker:a.ticker,symbol:a.symbol,category:a.category,value:a.weight,expectedReturn:a.expectedReturn,volatility:a.volatility}))}/></>}
