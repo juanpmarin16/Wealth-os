@@ -1,6 +1,6 @@
 export type DatedPrice = { date: string; value: number };
 export type AssetPriceSeries = { id: string; prices: DatedPrice[] };
-export type AlignedReturnRow = { date: string; returns: number[] };
+export type AlignedReturnRow = { date: string; startDate?: string; returns: number[] };
 export type Rebalancing = 'monthly' | 'annual' | 'none';
 export type PortfolioStats = {
   daily: number[]; nav: number[]; annualReturn: number | null; vol: number | null;
@@ -56,7 +56,7 @@ export function alignDailyAssetReturns(series: AssetPriceSeries[], maxStaleDays 
       const elapsedDays = dayNumber(date) - dayNumber(previousDate);
       const returns = latestPrices.map((price, index) => price / previousPrices![index] - 1);
       if (elapsedDays > 0 && elapsedDays <= maxStaleDays && returns.every(value => Number.isFinite(value) && value > -1)) {
-        output.push({ date, returns });
+        output.push({ date, startDate: previousDate, returns });
       }
     }
     previousPrices = [...latestPrices];
@@ -96,7 +96,7 @@ export function calculatePortfolioStats(
     previousMonth = month;
     previousYear = year;
   });
-  const elapsedDays = dayNumber(rows[rows.length - 1].date) - dayNumber(rows[0].date);
+  const elapsedDays = dayNumber(rows[rows.length - 1].date) - dayNumber(rows[0].startDate || rows[0].date);
   const elapsedYears = elapsedDays > 0 ? elapsedDays / 365.25 : 0;
   const periodsPerYear = elapsedYears > 0 ? portfolioReturns.length / elapsedYears : 0;
   if (!periodsPerYear || !elapsedYears) return { ...empty, daily: portfolioReturns, nav: navSeries, maxDD };
