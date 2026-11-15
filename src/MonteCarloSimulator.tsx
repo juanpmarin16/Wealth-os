@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { db } from './data/database';
 
-type PortfolioAsset = { name: string; ticker: string; category: string; value: number };
+type PortfolioAsset = { name: string; ticker: string; category: string; value: number; expectedReturn?: number; volatility?: number };
 type Props = { initialPortfolioValue: number; portfolioAssets: PortfolioAsset[]; monthlyContribution?: number; horizonYears?: number };
 type PathSummary = { ending: number; realEnding: number; survived: boolean; maxDrawdown: number; yearly: number[]; annualizedReturn: number; totalContributions: number; totalWithdrawals: number };
 type HistoryRow = { date: string; returns: number[] };
@@ -114,7 +114,7 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
   const [assets, setAssets] = useState<Array<{ name: string; ticker: string; weight: number; mean: number; vol: number }>>(() => {
     const total = portfolioAssets.reduce((sum, asset) => sum + Math.max(0, asset.value), 0);
     return portfolioAssets.length
-      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: 7, vol: 15 }))
+      ? portfolioAssets.map(asset => ({ name: asset.name, ticker: asset.ticker, weight: total > 0 ? Math.max(0, asset.value) / total * 100 : 100 / portfolioAssets.length, mean: asset.expectedReturn ?? 7, vol: asset.volatility ?? 15 }))
       : [{ name: 'Global Equities', ticker: 'Equity', weight: 60, mean: 7, vol: 16 }, { name: 'Bonds', ticker: 'Bond', weight: 40, mean: 3.5, vol: 7 }];
   });
   const [results, setResults] = useState<PathSummary[] | null>(null);
