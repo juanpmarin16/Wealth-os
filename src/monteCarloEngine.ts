@@ -196,11 +196,13 @@ function simulateOnePath(config: SimulationConfig, assets: SimulationAsset[], hi
   let survived = true;
   let totalContributions = 0;
   let totalWithdrawals = 0;
+  let percentageWithdrawalBase = config.initialValue;
   const yearly = [config.initialValue];
   const inflationParameters = annualLogParameters(config.inflationMean, config.inflationVolatility);
   const monthsPerCashflow = 12 / config.frequency;
 
   for (let month = 0; month < config.years * 12; month++) {
+    if (month % 12 === 0) percentageWithdrawalBase = units * nav;
     const row = monthlyReturns[month];
     const portfolioReturn = row.reduce((sum, assetReturn, i) => sum + currentWeights[i] * assetReturn, 0);
     nav *= Math.max(0.000001, 1 + portfolioReturn);
@@ -216,7 +218,7 @@ function simulateOnePath(config: SimulationConfig, assets: SimulationAsset[], hi
     if ((month + 1) % monthsPerCashflow === 0) {
       let flow = config.annualCashflow / config.frequency * (config.inflationAdjustedCashflows ? cumulativeInflation : 1);
       if (config.cashflowType === 'withdrawal') flow = -flow;
-      if (config.cashflowType === 'percentage') flow = -Math.max(0, balance * config.annualWithdrawalRate / 100 / config.frequency);
+      if (config.cashflowType === 'percentage') flow = -Math.max(0, percentageWithdrawalBase * config.annualWithdrawalRate / 100 / config.frequency);
       if (config.cashflowType === 'life') {
         const ageAtPayment = config.currentAge + (month + 1) / 12;
         const remainingYears = Math.max(1, 100 - ageAtPayment);
