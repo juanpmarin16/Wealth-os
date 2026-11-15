@@ -43,11 +43,16 @@ export function alignDailyAssetReturns(series: AssetPriceSeries[], maxStaleDays 
     if (latestPrices.some(price => price <= 0)) continue;
     const stale = latestDates.some(lastDate => dayNumber(date) - dayNumber(lastDate) > maxStaleDays);
     if (stale) {
+      previousPrices = null;
+      previousDate = '';
+      continue;
+    }
+    if (!previousPrices) {
       previousPrices = [...latestPrices];
       previousDate = date;
       continue;
     }
-    if (previousPrices && previousDate) {
+    if (previousDate) {
       const elapsedDays = dayNumber(date) - dayNumber(previousDate);
       const returns = latestPrices.map((price, index) => price / previousPrices![index] - 1);
       if (elapsedDays > 0 && elapsedDays <= maxStaleDays && returns.every(value => Number.isFinite(value) && value > -1)) {
