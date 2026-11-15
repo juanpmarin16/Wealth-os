@@ -68,29 +68,6 @@ function LineChart({ values, label = 'Portfolio growth' }: { values: number[]; l
 }
 function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) { return <div className="metric-card"><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div>; }
 
-const uid = () => Math.random().toString(36).slice(2, 10);
-const SYMBOLS: Record<string, string> = { VGWL: 'VGWL.DE', VWCE: 'VWCE.DE', VWRL: 'VWRL.DE', EQQQ: 'EQQQ.DE', LDGL: 'LDGL.L', BTC: 'BTC-USD', ETH: 'ETH-USD', MSTR: 'MSTR', SGLN: 'SGLN.L', IGLN: 'IGLN.L', VUSA: 'VUSA.DE', CSPX: 'CSPX.AS', AGGH: 'AGGH.DE', XEON: 'XEON.DE' };
-
-function loadAssets(): Asset[] {
-  try { const raw = localStorage.getItem('wealth-os-lab-assets'); const parsed = raw ? JSON.parse(raw) : null; if (Array.isArray(parsed) && parsed.length) return parsed; } catch { /* use defaults */ }
-  return DEFAULTS;
-}
-function covariance(a: number[], b: number[]) { const n = Math.min(a.length, b.length); if (n < 3) return 0; const x = a.slice(-n), y = b.slice(-n), mx = avg(x), my = avg(y); return x.reduce((s, v, i) => s + (v - mx) * (y[i] - my), 0) / (n - 1); }
-function weightedStats(returns: number[][], weights: number[]) {
-  const n = Math.min(...returns.map(r => r.length)); if (!Number.isFinite(n) || n < 2) return { daily: [] as number[], annualReturn: null as number | null, vol: null as number | null, sharpe: null as number | null, sortino: null as number | null, maxDD: null as number | null };
-  const daily = Array.from({ length: n }, (_, i) => returns.reduce((s, r, j) => s + (r[r.length - n + i] || 0) * weights[j], 0));
-  const mean = avg(daily), vol = stdev(daily) * Math.sqrt(252), annualReturn = Math.pow(Math.max(.000001, daily.reduce((p, r) => p * (1 + r), 1)), 252 / n) - 1;
-  const downside = Math.sqrt(avg(daily.filter(r => r < 0).map(r => r * r))) * Math.sqrt(252);
-  let nav = 1, peak = 1, maxDD = 0; daily.forEach(r => { nav *= 1 + r; peak = Math.max(peak, nav); maxDD = Math.max(maxDD, 1 - nav / peak); });
-  return { daily, annualReturn, vol, sharpe: vol ? (mean * 252 - .02) / vol : null, sortino: downside ? (mean * 252 - .02) / downside : null, maxDD };
-}
-function LineChart({ values, label = 'Portfolio growth' }: { values: number[]; label?: string }) {
-  if (values.length < 2) return <div className="empty-state">Import historical prices to display this chart.</div>;
-  const w = 900, h = 260, pad = 28, min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
-  const points = values.map((v, i) => `${pad + i / (values.length - 1) * (w - 2 * pad)},${h - pad - (v - min) / span * (h - 2 * pad)}`).join(' ');
-  return <div className="chart-wrap"><svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label}><line x1={pad} y1={h-pad} x2={w-pad} y2={h-pad} className="chart-axis"/><polyline points={points} className="chart-line" fill="none"/></svg></div>;
-}
-function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) { return <div className="metric-card"><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div>; }
 
 export default function PortfolioWorkspace() {
   const [page, setPage] = useState<Page>('Portfolio Builder');
