@@ -135,15 +135,20 @@ export default function MonteCarloSimulator({ initialPortfolioValue, portfolioAs
           fxMap.set(currency, [...merged.entries()].map(([date, value]) => ({ date, value })).sort((a, b) => a.date.localeCompare(b.date)));
         }
         const monthlyMaps = matched.map(item => {
-          const monthly = new Map<string, number>();
+          const rawMonthly = new Map<string, { date: string; value: number }>();
           for (const point of item.rows) {
-            let value = point.adjustedClose && point.adjustedClose > 0 ? point.adjustedClose : point.close;
-            if (item.currency !== 'EUR') {
-              const fx = latestFxRate(fxMap.get(item.currency) || [], point.date);
-              if (!fx || fx <= 0) continue;
-              value /= fx;
-            }
-            monthly.set(point.date.slice(0, 7), value);
+            rawMonthly.set(point.date.slice(0, 7), {
+              date: point.date,
+              value: point.adjustedClose && point.adjustedClose > 0 ? point.adjustedClose : point.close,
+            });
+          }
+          const monthly = new Map<string, number>();
+          for (const [period, point] of rawMonthly) {
+            const [year, month] = period.split('-').map(Number);
+            const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+            const fx = item.currency === 'EUR' ? 1 : latestFxRate(fxMap.get(item.currency) || [], monthEnd);
+            if (!fx || fx <= 0) continue;
+            monthly.set(period, point.value / fx);
           }
           return monthly;
         });
