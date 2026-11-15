@@ -58,13 +58,14 @@ export default function PortfolioWorkspace() {
   const [varPeriod, setVarPeriod] = useState<'daily' | 'monthly' | 'annual'>('daily');
   const [stress, setStress] = useState('2008');
   const [optimization, setOptimization] = useState<{ weights: number[]; ret: number; vol: number; sharpe: number }[]>([]);
+  const [minimumVariance, setMinimumVariance] = useState<{ weights: number[]; ret: number; vol: number; sharpe: number } | null>(null);
   const totalWeight = assets.reduce((s, a) => s + Math.max(0, Number(a.weight) || 0), 0);
   const weights = assets.map(a => totalWeight ? Math.max(0, a.weight) / totalWeight : 0);
   const validAssets = assets.filter(a => a.ticker.trim() && a.weight > 0);
   const nav = useMemo(() => {
     if (!series.length || !validAssets.length) return [];
     const aligned = series.map(s => new Map(s.prices.map(p => [p.date, p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close])));
-    const dates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].sort();
+    const dates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].filter(date => series.every(s => s.prices.some(p => p.date === date))).sort();
     const last: number[] = Array(series.length).fill(0);
     const points: number[] = [];
     dates.forEach(date => {
@@ -76,7 +77,7 @@ export default function PortfolioWorkspace() {
   }, [series, assets, weights.join('|')]);
   const returnArrays = useMemo(() => {
     if (!series.length) return [] as number[][];
-    const allDates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].sort();
+    const allDates = [...new Set(series.flatMap(s => s.prices.map(p => p.date)))].filter(date => series.every(s => s.prices.some(p => p.date === date))).sort();
     const priceMaps = series.map(s => new Map(s.prices.map(p => [p.date, p.adjustedClose && p.adjustedClose > 0 ? p.adjustedClose : p.close])));
     const lastPrices = Array(series.length).fill(0) as number[];
     const previousPrices = Array(series.length).fill(0) as number[];
@@ -128,10 +129,17 @@ export default function PortfolioWorkspace() {
       const stats = weightedStats(returnArrays, series.map(s => w[assets.findIndex(a => a.ticker === s.asset.ticker)]));
       return { weights: w, ret: stats.annualReturn || 0, vol: stats.vol || 0, sharpe: stats.sharpe || 0 };
     });
+    const lowestRisk = [...candidates].sort((a,b) => a.vol-b.vol)[0] || null;
+    setMinimumVariance(lowestRisk);
     setOptimization(candidates.sort((a,b) => b.sharpe-a.sharpe).slice(0, 20)); setDataError('');
   }
-  const selectedStress = stress === '2008' ? [-.38,-.12,-.08,-.05] : stress === '2020' ? [-.34,-.25,-.18,.04] : stress === '2022' ? [-.19,-.33,-.15,-.12] : [-.15,-.1,-.05,-.02];
-  const stressImpact = assets.reduce((s,_a,i) => s + weights[i] * (selectedStress[i % selectedStress.length] || 0),0);
+  const stressByClass: Record<string, Record<string, number>> = {
+    '2008': { Equity: -.38, Bond: -.05, Crypto: -.70, Commodity: -.25, 'Real Estate': -.40, Cash: 0, Other: -.25 },
+    '2020': { Equity: -.34, Bond: .02, Crypto: -.50, Commodity: -.12, 'Real Estate': -.30, Cash: 0, Other: -.20 },
+    '2022': { Equity: -.19, Bond: -.15, Crypto: -.65, Commodity: .05, 'Real Estate': -.25, Cash: 0, Other: -.20 },
+    custom: { Equity: -.15, Bond: -.10, Crypto: -.35, Commodity: -.05, 'Real Estate': -.15, Cash: 0, Other: -.10 },
+  };
+  const stressImpact = assets.reduce((sum, asset, i) => sum + weights[i] * (stressByClass[stress]?.[asset.category] ?? stressByClass[stress]?.Other ?? 0), 0);
   const historicalIndex = nav.length ? nav.map(v => v / nav[0] * 100) : [];
   const activePage = (p: Page) => setPage(p);
 
@@ -165,7 +173,7 @@ export default function PortfolioWorkspace() {
           <section className="panel"><div className="section-heading"><div><h2>Correlation matrix</h2><p>Daily return correlations across selected assets.</p></div></div><div className="table-scroll"><table className="data-table matrix"><thead><tr><th>Asset</th>{series.map(s=><th key={s.asset.id}>{s.asset.ticker}</th>)}</tr></thead><tbody>{series.map((s,i)=><tr key={s.asset.id}><th>{s.asset.ticker}</th>{series.map((t,j)=><td key={t.asset.id} style={{background:`rgba(91,126,220,${Math.abs(corrMatrix[i]?.[j]||0)*.24})`}}>{corrMatrix[i]?.[j]?.toFixed(2)??'—'}</td>)}</tr>)}</tbody></table></div></section>
           <section className="panel"><div className="section-heading"><div><h2>Historical stress scenarios</h2><p>Illustrative shocks applied to each asset class. Not a replay of exact daily historical returns.</p></div></div><label className="stress-select">Scenario<select value={stress} onChange={e=>setStress(e.target.value)}><option value="2008">Global Financial Crisis (2008)</option><option value="2020">COVID-19 shock (2020)</option><option value="2022">Rate & inflation shock (2022)</option><option value="custom">Custom severe drawdown</option></select></label><div className="stress-result"><span>Estimated portfolio shock</span><strong className={stressImpact<0?'negative':''}>{pct(stressImpact)}</strong><small>Illustrative proxy based on position weights and broad asset-class shocks.</small></div></section>
         </>}
-        {page === 'Optimization' && <><div className="page-heading"><div><div className="eyebrow">MEAN-VARIANCE FRAMEWORK</div><h1>Portfolio Optimization</h1><p>Explore simulated allocations using historical asset returns.</p></div><button className="button button-primary" onClick={runOptimization}>Run 5,000 portfolios</button></div>{dataError&&<div className="alert">{dataError}</div>}<div className="panel"><div className="section-heading"><div><h2>Optimization results</h2><p>Random long-only allocations ranked by historical Sharpe ratio. 2% risk-free rate.</p></div></div>{optimization.length===0?<div className="empty-state">Load historical data in Portfolio Analysis, then run the optimizer. Results are estimates, not guaranteed optimal allocations.</div>:<div className="table-scroll"><table className="data-table"><thead><tr><th>Rank</th><th>Expected annual return</th><th>Annual volatility</th><th>Sharpe</th>{assets.map(a=><th key={a.id}>{a.ticker||a.name}</th>)}</tr></thead><tbody>{optimization.map((o,i)=><tr key={i}><td>{i+1}</td><td>{pct(o.ret)}</td><td>{pct(o.vol)}</td><td>{o.sharpe.toFixed(2)}</td>{o.weights.map((w,j)=><td key={j}>{pct(w)}</td>)}</tr>)}</tbody></table></div>}</div></>}
+        {page === 'Optimization' && <><div className="page-heading"><div><div className="eyebrow">MEAN-VARIANCE FRAMEWORK</div><h1>Portfolio Optimization</h1><p>Explore simulated allocations using historical asset returns.</p></div><button className="button button-primary" onClick={runOptimization}>Run 5,000 portfolios</button></div>{dataError&&<div className="alert">{dataError}</div>}<div className="panel"><div className="section-heading"><div><h2>Optimization results</h2><p>5,000 random long-only allocations; top Sharpe portfolios and the minimum-volatility candidate. 2% risk-free rate.</p></div></div>{optimization.length===0?<div className="empty-state">Load historical data in Portfolio Analysis, then run the optimizer. Results are estimates, not guaranteed optimal allocations.</div>:<div className="table-scroll"><table className="data-table"><thead><tr><th>Rank</th><th>Expected annual return</th><th>Annual volatility</th><th>Sharpe</th>{assets.map(a=><th key={a.id}>{a.ticker||a.name}</th>)}</tr></thead><tbody>{optimization.map((o,i)=><tr key={i}><td>{i+1}</td><td>{pct(o.ret)}</td><td>{pct(o.vol)}</td><td>{o.sharpe.toFixed(2)}</td>{o.weights.map((w,j)=><td key={j}>{pct(w)}</td>)}</tr>)}</tbody></table></div>}</div></>}
         {page === 'Market Data' && <><div className="page-heading"><div><div className="eyebrow">MARKET DATA INFRASTRUCTURE</div><h1>Market Data</h1><p>Import full historical price series and maintain the durable market archive.</p></div></div><MarketDataImport assets={assets.map(a=>({id:a.id,name:a.name,ticker:a.ticker,category:a.category}))}/><section className="panel market-help"><h2>Supported market symbols</h2><p>Use Yahoo Finance symbols in the Market Symbol column in Portfolio Builder. Examples: VWCE.DE, VGWL.DE, EQQQ.DE, BTC-USD, ETH-USD, LDGL.L. Data is retrieved from the existing Wealth OS market-data API and stored in the connected archive when configured.</p><button className="button button-secondary" onClick={()=>setPage('Portfolio Analysis')}>Back to portfolio analysis</button></section></>}
       </div>
       <footer className="app-footer">WEALTH OS · PORTFOLIO ANALYTICS & SIMULATION <span>Hypothetical analysis only · Not investment advice</span></footer>
