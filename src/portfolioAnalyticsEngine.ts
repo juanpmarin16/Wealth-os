@@ -144,6 +144,67 @@ export function calculateHistoricalTailRisk(returns: number[], confidence: numbe
   };
 }
 
+export type BenchmarkMetrics = {
+  alpha: number | null;
+  beta: number | null;
+  rSquared: number | null;
+  trackingError: number | null;
+  informationRatio: number | null;
+  observations: number;
+};
+
+export function calculateBenchmarkMetrics(
+  portfolioReturns: number[],
+  benchmarkReturns: number[],
+  periodsPerYear: number,
+  riskFreeRate = 0.02,
+): BenchmarkMetrics {
+  const empty: BenchmarkMetrics = {
+    alpha: null, beta: null, rSquared: null, trackingError: null,
+    informationRatio: null, observations: 0,
+  };
+  if (
+    portfolioReturns.length !== benchmarkReturns.length ||
+    portfolioReturns.length < 2 ||
+    !Number.isFinite(periodsPerYear) || periodsPerYear <= 0 ||
+    !Number.isFinite(riskFreeRate) || riskFreeRate <= -1 ||
+    portfolioReturns.some(value => !Number.isFinite(value)) ||
+    benchmarkReturns.some(value => !Number.isFinite(value))
+  ) return empty;
+
+  const count = portfolioReturns.length;
+  const portfolioMean = average(portfolioReturns);
+  const benchmarkMean = average(benchmarkReturns);
+  const benchmarkVarianceSum = benchmarkReturns.reduce((sum, value) => sum + (value - benchmarkMean) ** 2, 0);
+  const portfolioVarianceSum = portfolioReturns.reduce((sum, value) => sum + (value - portfolioMean) ** 2, 0);
+  if (benchmarkVarianceSum <= 1e-18) return { ...empty, observations: count };
+
+  const covarianceSum = portfolioReturns.reduce(
+    (sum, value, index) => sum + (value - portfolioMean) * (benchmarkReturns[index] - benchmarkMean),
+    0,
+  );
+  const beta = covarianceSum / benchmarkVarianceSum;
+  const correlation = portfolioVarianceSum > 1e-18
+    ? covarianceSum / Math.sqrt(portfolioVarianceSum * benchmarkVarianceSum)
+    : 0;
+  const dailyRiskFree = Math.pow(1 + riskFreeRate, 1 / periodsPerYear) - 1;
+  const alpha = (portfolioMean - dailyRiskFree - beta * (benchmarkMean - dailyRiskFree)) * periodsPerYear;
+  const activeReturns = portfolioReturns.map((value, index) => value - benchmarkReturns[index]);
+  const trackingError = sampleStdDev(activeReturns) * Math.sqrt(periodsPerYear);
+  const informationRatio = trackingError > 0
+    ? (average(activeReturns) * periodsPerYear) / trackingError
+    : null;
+
+  return {
+    alpha,
+    beta,
+    rSquared: Math.min(1, Math.max(0, correlation ** 2)),
+    trackingError,
+    informationRatio,
+    observations: count,
+  };
+}
+
 export function correlationMatrix(rows: AlignedReturnRow[]): number[][] {
   if (!rows.length) return [];
   const columns = rows[0].returns.map((_, index) => rows.map(row => row.returns[index]));
